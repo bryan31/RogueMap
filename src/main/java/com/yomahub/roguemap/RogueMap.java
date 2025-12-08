@@ -6,9 +6,11 @@ import com.yomahub.roguemap.index.IntPrimitiveIndex;
 import com.yomahub.roguemap.index.LongPrimitiveIndex;
 import com.yomahub.roguemap.index.SegmentedHashIndex;
 import com.yomahub.roguemap.memory.Allocator;
+import com.yomahub.roguemap.memory.MmapAllocator;
 import com.yomahub.roguemap.memory.SlabAllocator;
 import com.yomahub.roguemap.serialization.Codec;
 import com.yomahub.roguemap.serialization.PrimitiveCodecs;
+import com.yomahub.roguemap.storage.MmapStorage;
 import com.yomahub.roguemap.storage.OffHeapStorage;
 import com.yomahub.roguemap.storage.StorageEngine;
 
@@ -205,6 +207,11 @@ public class RogueMap<K, V> implements AutoCloseable {
         private int segmentCount = 64;
         private int initialCapacity = 16;
 
+        // MMAP 相关配置
+        private boolean useMmap = false;
+        private String persistentFilePath = null;
+        private long allocateSize = 10L * 1024 * 1024 * 1024; // 默认 10GB
+
         private Builder() {
         }
 
@@ -300,7 +307,46 @@ public class RogueMap<K, V> implements AutoCloseable {
          * @return 此构建器
          */
         public Builder<K, V> offHeap() {
-            // 已经是默认模式
+            this.useMmap = false;
+            return this;
+        }
+
+        /**
+         * 启用内存映射文件模式
+         *
+         * @return 此构建器
+         */
+        public Builder<K, V> mmap() {
+            this.useMmap = true;
+            return this;
+        }
+
+        /**
+         * 设置持久化文件路径（自动启用 MMAP 模式）
+         *
+         * @param filePath 文件路径
+         * @return 此构建器
+         */
+        public Builder<K, V> persistent(String filePath) {
+            if (filePath == null || filePath.isEmpty()) {
+                throw new IllegalArgumentException("文件路径不能为空");
+            }
+            this.persistentFilePath = filePath;
+            this.useMmap = true;
+            return this;
+        }
+
+        /**
+         * 设置预分配文件大小（仅用于 MMAP 模式）
+         *
+         * @param size 预分配大小（字节）
+         * @return 此构建器
+         */
+        public Builder<K, V> allocateSize(long size) {
+            if (size <= 0) {
+                throw new IllegalArgumentException("分配大小必须为正数");
+            }
+            this.allocateSize = size;
             return this;
         }
 
@@ -318,11 +364,23 @@ public class RogueMap<K, V> implements AutoCloseable {
                 throw new IllegalStateException("必须设置值编解码器");
             }
 
-            // 创建分配器
-            Allocator allocator = new SlabAllocator(maxMemory);
+            // 创建分配器和存储引擎
+            Allocator allocator;
+            StorageEngine storage;
 
-            // 创建存储引擎
-            StorageEngine storage = new OffHeapStorage(allocator);
+            if (useMmap) {
+                // MMAP 模式
+                if (persistentFilePath == null || persistentFilePath.isEmpty()) {
+                    throw new IllegalStateException("MMAP 模式必须设置文件路径，请使用 persistent(filePath)");
+                }
+                MmapAllocator mmapAllocator = new MmapAllocator(persistentFilePath, allocateSize);
+                allocator = mmapAllocator;
+                storage = new MmapStorage(mmapAllocator);
+            } else {
+                // 堆外内存模式
+                allocator = new SlabAllocator(maxMemory);
+                storage = new OffHeapStorage(allocator);
+            }
 
             // 创建索引
             Index<K> index;
