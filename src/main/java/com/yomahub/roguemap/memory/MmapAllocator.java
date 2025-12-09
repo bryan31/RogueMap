@@ -1,5 +1,7 @@
 package com.yomahub.roguemap.memory;
 
+import com.yomahub.roguemap.util.TempFileManager;
+
 import java.io.File;
 import java.io.RandomAccessFile;
 import java.nio.MappedByteBuffer;
@@ -30,22 +32,42 @@ public class MmapAllocator implements Allocator {
     private final AtomicLong currentOffset;
     private final long segmentSize;
     private final int segmentCount;
+    private final boolean isTemporary;
 
     /**
-     * 创建 MmapAllocator
+     * 创建 MmapAllocator（持久化模式）
      *
      * @param filePath 文件路径
      * @param fileSize 预分配文件大小（字节）
      */
     public MmapAllocator(String filePath, long fileSize) {
-        if (filePath == null || filePath.isEmpty()) {
-            throw new IllegalArgumentException("文件路径不能为空");
-        }
+        this(filePath, fileSize, false);
+    }
+
+    /**
+     * 创建 MmapAllocator
+     *
+     * @param filePath 文件路径（如果为 null 且 isTemporary=true，则自动生成临时文件）
+     * @param fileSize 预分配文件大小（字节）
+     * @param isTemporary 是否为临时文件模式
+     */
+    public MmapAllocator(String filePath, long fileSize, boolean isTemporary) {
         if (fileSize <= 0) {
             throw new IllegalArgumentException("文件大小必须为正数");
         }
 
-        this.file = new File(filePath);
+        this.isTemporary = isTemporary;
+
+        // 如果是临时文件模式且未指定路径，自动生成临时文件
+        if (isTemporary && (filePath == null || filePath.isEmpty())) {
+            this.file = TempFileManager.createTempFile();
+        } else {
+            if (filePath == null || filePath.isEmpty()) {
+                throw new IllegalArgumentException("文件路径不能为空");
+            }
+            this.file = new File(filePath);
+        }
+
         this.fileSize = fileSize;
         // 数据从 HEADER_SIZE 之后开始分配
         this.currentOffset = new AtomicLong(com.yomahub.roguemap.storage.MmapFileHeader.HEADER_SIZE);
@@ -102,9 +124,14 @@ public class MmapAllocator implements Allocator {
             // 注意：不在这里初始化头部，而是在第一次 close() 时初始化
             // 这样可以区分新文件和已有数据的文件
 
+            // 如果是临时文件，注册清理钩子
+            if (isTemporary) {
+                TempFileManager.registerCleanupHook(file, segments.toArray(new MappedByteBuffer[0]));
+            }
+
         } catch (Exception e) {
             close();
-            throw new RuntimeException("创建内存映射文件失败: " + filePath, e);
+            throw new RuntimeException("创建内存映射文件失败: " + file.getAbsolutePath(), e);
         }
     }
 
@@ -120,6 +147,7 @@ public class MmapAllocator implements Allocator {
         header.setCurrentOffset(com.yomahub.roguemap.storage.MmapFileHeader.HEADER_SIZE);  // 头部之后开始
         header.setIndexOffset(0);
         header.setIndexSize(0);
+        header.setIsTemporary(isTemporary ? 1 : 0);
 
         long baseAddress = segmentBaseAddresses.get(0);
         header.write(baseAddress);
@@ -216,19 +244,33 @@ public class MmapAllocator implements Allocator {
     @Override
     public void close() {
         try {
-            // 强制刷新所有分段到磁盘
-            for (MappedByteBuffer segment : segments) {
-                if (segment != null) {
-                    segment.force();
+            // 临时文件模式：跳过持久化，直接清理
+            if (isTemporary) {
+                // 关闭通道和文件
+                if (channel != null && channel.isOpen()) {
+                    channel.close();
                 }
-            }
+                if (raf != null) {
+                    raf.close();
+                }
 
-            // 关闭通道和文件
-            if (channel != null && channel.isOpen()) {
-                channel.close();
-            }
-            if (raf != null) {
-                raf.close();
+                // 立即删除临时文件
+                TempFileManager.deleteImmediately(file, segments.toArray(new MappedByteBuffer[0]));
+            } else {
+                // 持久化模式：正常刷新
+                for (MappedByteBuffer segment : segments) {
+                    if (segment != null) {
+                        segment.force();
+                    }
+                }
+
+                // 关闭通道和文件
+                if (channel != null && channel.isOpen()) {
+                    channel.close();
+                }
+                if (raf != null) {
+                    raf.close();
+                }
             }
         } catch (Exception e) {
             throw new RuntimeException("关闭内存映射文件失败", e);
@@ -273,6 +315,14 @@ public class MmapAllocator implements Allocator {
         sb.append("  已使用: ").append(usedMemory()).append(" 字节\n");
         sb.append("  可用: ").append(availableMemory()).append(" 字节\n");
         sb.append("  利用率: ").append(String.format("%.2f%%", 100.0 * usedMemory() / fileSize));
+        sb.append("\n  临时文件: ").append(isTemporary ? "是" : "否");
         return sb.toString();
+    }
+
+    /**
+     * 检查是否为临时文件模式
+     */
+    public boolean isTemporary() {
+        return isTemporary;
     }
 }

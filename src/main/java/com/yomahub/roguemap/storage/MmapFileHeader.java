@@ -15,7 +15,8 @@ import com.yomahub.roguemap.memory.UnsafeOps;
  * - Current Offset (8 bytes)
  * - Index Offset (8 bytes)
  * - Index Size (8 bytes)
- * - Reserved (3960 bytes)
+ * - Is Temporary (4 bytes): 0=persistent, 1=temporary
+ * - Reserved (3956 bytes)
  */
 public class MmapFileHeader {
 
@@ -30,6 +31,7 @@ public class MmapFileHeader {
     private long currentOffset; // 当前分配偏移量
     private long indexOffset;   // 索引数据起始位置
     private long indexSize;     // 索引数据大小
+    private int isTemporary;    // 0=persistent, 1=temporary
 
     public MmapFileHeader() {
         this.magicNumber = MAGIC_NUMBER;
@@ -49,6 +51,7 @@ public class MmapFileHeader {
         header.currentOffset = UnsafeOps.getLong(address + 16);
         header.indexOffset = UnsafeOps.getLong(address + 24);
         header.indexSize = UnsafeOps.getLong(address + 32);
+        header.isTemporary = UnsafeOps.getInt(address + 40);
 
         return header;
     }
@@ -64,9 +67,10 @@ public class MmapFileHeader {
         UnsafeOps.putLong(address + 16, currentOffset);
         UnsafeOps.putLong(address + 24, indexOffset);
         UnsafeOps.putLong(address + 32, indexSize);
+        UnsafeOps.putInt(address + 40, isTemporary);
 
         // 清空保留区域（确保干净的头部）
-        UnsafeOps.setMemory(address + 40, HEADER_SIZE - 40, (byte) 0);
+        UnsafeOps.setMemory(address + 44, HEADER_SIZE - 44, (byte) 0);
     }
 
     /**
@@ -136,6 +140,18 @@ public class MmapFileHeader {
         this.indexSize = indexSize;
     }
 
+    public int getIsTemporary() {
+        return isTemporary;
+    }
+
+    public void setIsTemporary(int isTemporary) {
+        this.isTemporary = isTemporary;
+    }
+
+    public boolean isTemporary() {
+        return isTemporary == 1;
+    }
+
     @Override
     public String toString() {
         return "MmapFileHeader{" +
@@ -146,6 +162,7 @@ public class MmapFileHeader {
                 ", currentOffset=" + currentOffset +
                 ", indexOffset=" + indexOffset +
                 ", indexSize=" + indexSize +
+                ", isTemporary=" + isTemporary +
                 '}';
     }
 }

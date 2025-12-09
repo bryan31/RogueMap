@@ -174,11 +174,25 @@ public class RogueMap<K, V> implements AutoCloseable {
         storage.flush();
     }
 
+    /**
+     * 获取存储引擎（用于测试）
+     */
+    public StorageEngine getStorage() {
+        return storage;
+    }
+
     @Override
     public void close() {
-        // 如果是 MMAP 模式，保存索引
+        // 如果是 MMAP 模式，检查是否需要保存索引
         if (storage instanceof MmapStorage) {
-            saveMmapIndex();
+            MmapStorage mmapStorage = (MmapStorage) storage;
+            MmapAllocator mmapAllocator = mmapStorage.getAllocator();
+
+            // 临时文件模式：跳过持久化
+            // 持久化模式：保存索引
+            if (!mmapAllocator.isTemporary()) {
+                saveMmapIndex();
+            }
         }
 
         index.close();
@@ -415,6 +429,7 @@ public class RogueMap<K, V> implements AutoCloseable {
     public static class MmapBuilder<K, V> extends BaseBuilder<K, V, MmapBuilder<K, V>> {
         private String persistentFilePath;
         private long allocateSize = 10L * 1024 * 1024 * 1024; // 默认 10GB
+        private boolean isTemporary = false;
 
         private MmapBuilder() {
         }
@@ -430,6 +445,19 @@ public class RogueMap<K, V> implements AutoCloseable {
                 throw new IllegalArgumentException("文件路径不能为空");
             }
             this.persistentFilePath = filePath;
+            this.isTemporary = false;
+            return this;
+        }
+
+        /**
+         * 使用临时文件模式
+         * 临时文件会在 JVM 关闭后自动删除，适用于临时缓存场景
+         *
+         * @return 此构建器
+         */
+        public MmapBuilder<K, V> temporary() {
+            this.isTemporary = true;
+            this.persistentFilePath = null;
             return this;
         }
 
@@ -455,35 +483,43 @@ public class RogueMap<K, V> implements AutoCloseable {
             if (valueCodec == null) {
                 throw new IllegalStateException("必须设置值编解码器");
             }
-            if (persistentFilePath == null || persistentFilePath.isEmpty()) {
-                throw new IllegalStateException("MMAP 模式必须设置文件路径，请使用 persistent(filePath)");
+
+            // 临时文件模式不需要指定路径
+            if (!isTemporary && (persistentFilePath == null || persistentFilePath.isEmpty())) {
+                throw new IllegalStateException("MMAP 模式必须设置文件路径，请使用 persistent(filePath) 或 temporary()");
             }
 
-            MmapAllocator mmapAllocator = new MmapAllocator(persistentFilePath, allocateSize);
+            // 创建 MmapAllocator（临时模式会自动生成文件路径）
+            MmapAllocator mmapAllocator = new MmapAllocator(persistentFilePath, allocateSize, isTemporary);
             Allocator allocator = mmapAllocator;
             StorageEngine storage = new MmapStorage(mmapAllocator);
 
             Index<K> index;
 
-            // 检查是否是已存在的文件
-            if (mmapAllocator.isExistingFile()) {
-                // 恢复模式
-                com.yomahub.roguemap.storage.MmapFileHeader header = mmapAllocator.readHeader();
-
-                // 恢复 allocator 的 offset
-                mmapAllocator.restoreOffset(header.getCurrentOffset());
-
-                // 创建索引并恢复数据
-                index = createIndexFromType(header.getIndexType(), keyCodec);
-
-                if (header.getIndexSize() > 0) {
-                    long baseAddress = mmapAllocator.getBaseAddress();
-                    long indexAddress = baseAddress + header.getIndexOffset();
-                    index.deserializeWithOffsets(indexAddress, (int) header.getIndexSize(), baseAddress);
-                }
-            } else {
-                // 新文件模式
+            // 临时文件模式：总是创建新索引（不恢复）
+            if (isTemporary) {
                 index = createNewIndex(keyCodec);
+            } else {
+                // 持久化模式：检查是否是已存在的文件
+                if (mmapAllocator.isExistingFile()) {
+                    // 恢复模式
+                    com.yomahub.roguemap.storage.MmapFileHeader header = mmapAllocator.readHeader();
+
+                    // 恢复 allocator 的 offset
+                    mmapAllocator.restoreOffset(header.getCurrentOffset());
+
+                    // 创建索引并恢复数据
+                    index = createIndexFromType(header.getIndexType(), keyCodec);
+
+                    if (header.getIndexSize() > 0) {
+                        long baseAddress = mmapAllocator.getBaseAddress();
+                        long indexAddress = baseAddress + header.getIndexOffset();
+                        index.deserializeWithOffsets(indexAddress, (int) header.getIndexSize(), baseAddress);
+                    }
+                } else {
+                    // 新文件模式
+                    index = createNewIndex(keyCodec);
+                }
             }
 
             return new RogueMap<>(index, storage, keyCodec, valueCodec, allocator);
