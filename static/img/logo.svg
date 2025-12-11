@@ -1,16 +1,20 @@
 <svg viewBox="0 0 100 100" fill="none" xmlns="http://www.w3.org/2000/svg">
-                        <title>RogueMap Logo - Concept D Lavender</title>
+                        <title>RogueMap Logo - Concept D Diagonal</title>
                         
-                        <!-- Light Blue Wall (#A8B1FF) -->
-                        <path fill-rule="evenodd" clip-rule="evenodd" d="M15 85 L15 15 L85 15 L85 45 H70 V30 H30 V70 H45 V85 H15Z" fill="#A8B1FF"></path>
+                        <!-- Blue Wall (L-Shape Container, Diagonal Symmetric) -->
+                        <!-- Path logic: Outer Top-Left -> Inner Top-Left -> Thickness -->
+                        <!-- Points: Start Bottom-Left(15,85) -> Top-Left(15,15) -> Top-Right(85,15) 
+                             -> Down to (85,45) -> In to (70,45) -> In to (70,30) -> In to (30,30) [Inner Corner]
+                             -> Down to (30,70) -> Out to (45,70) -> Out to (45,85) -> Close -->
+                        <path fill-rule="evenodd" clip-rule="evenodd" d="M15 85 L15 15 L85 15 L85 45 H70 V30 H30 V70 H45 V85 H15Z" fill="#3451B2"></path>
                         
-                        <!-- Orange Breaker (Unchanged) -->
+                        <!-- Orange Breaker (The Arrow/Rogue Element) -->
+                        <!-- Emerging from the open bottom-right corner -->
                         <path d="M55 55 L85 65 L95 95 L65 85 Z" fill="#F29D00"></path>
                         
-                        <!-- Inner Detail (Same color, low opacity) -->
-                        <!-- Increased opacity slightly (0.2) because the base color is lighter -->
-                        <rect x="30" y="30" width="25" height="25" fill="#A8B1FF" opacity="0.2"></rect>
+                        <!-- Inner Detail (Faint Blue, symmetric) -->
+                        <rect x="30" y="30" width="25" height="25" fill="#3451B2" opacity="0.1"></rect>
                         
-                        <!-- The Dot (Key Value) -->
+                        <!-- The Dot (Key Value, on diagonal) -->
                         <circle cx="42.5" cy="42.5" r="5" fill="#F29D00"></circle>
                     </svg>
