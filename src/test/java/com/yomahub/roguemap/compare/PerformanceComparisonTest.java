@@ -1,8 +1,12 @@
 package com.yomahub.roguemap.compare;
 
+import com.github.benmanes.caffeine.cache.Cache;
+import com.github.benmanes.caffeine.cache.Caffeine;
 import com.yomahub.roguemap.RogueMap;
 import com.yomahub.roguemap.serialization.KryoObjectCodec;
 import com.yomahub.roguemap.serialization.PrimitiveCodecs;
+import it.unimi.dsi.fastutil.longs.Long2ObjectMap;
+import it.unimi.dsi.fastutil.longs.Long2ObjectOpenHashMap;
 
 import java.io.File;
 import java.io.IOException;
@@ -43,13 +47,19 @@ public class PerformanceComparisonTest {
         results.put("HashMap模式", testHashMapMode());
         forceGC();
 
-        results.put("OffHeap模式", testOffHeapMode());
+        results.put("Caffeine缓存模式", testCaffeineMode());
         forceGC();
 
-        results.put("Mmap临时文件模式", testMmapTemporaryMode());
+        results.put("FastUtil模式", testFastUtilMode());
         forceGC();
 
-        results.put("Mmap持久化模式", testMmapPersistentMode());
+        results.put("RogueMap.OffHeap模式", testOffHeapMode());
+        forceGC();
+
+        results.put("RogueMap.Mmap临时文件模式", testMmapTemporaryMode());
+        forceGC();
+
+        results.put("RogueMap.Mmap持久化模式", testMmapPersistentMode());
 
         // 输出对比结果
         printComparisonResults(results);
@@ -117,7 +127,7 @@ public class PerformanceComparisonTest {
      * 测试OffHeap模式
      */
     private static TestResult testOffHeapMode() throws IOException {
-        System.out.println("测试 OffHeap 模式...");
+        System.out.println("测试 RogueMap.OffHeap 模式...");
 
         // 清理内存，建立基准
         forceGC();
@@ -176,14 +186,14 @@ public class PerformanceComparisonTest {
             forceGC();
         }
 
-        return new TestResult("OffHeap模式", heapUsed, writeTimeMs, readTimeMs);
+        return new TestResult("RogueMap.OffHeap模式", heapUsed, writeTimeMs, readTimeMs);
     }
 
     /**
      * 测试Mmap临时文件模式
      */
     private static TestResult testMmapTemporaryMode() throws IOException {
-        System.out.println("测试 Mmap 临时文件模式...");
+        System.out.println("测试 RogueMap.Mmap 临时文件模式...");
 
         // 清理内存，建立基准
         forceGC();
@@ -243,14 +253,14 @@ public class PerformanceComparisonTest {
             forceGC();
         }
 
-        return new TestResult("Mmap临时文件模式", heapUsed, writeTimeMs, readTimeMs);
+        return new TestResult("RogueMap.Mmap临时文件模式", heapUsed, writeTimeMs, readTimeMs);
     }
 
     /**
      * 测试Mmap持久化模式
      */
     private static TestResult testMmapPersistentMode() throws IOException {
-        System.out.println("测试 Mmap 持久化模式...");
+        System.out.println("测试 RogueMap.Mmap 持久化模式...");
 
         String filePath = TEST_DIR + "/persistent_test.map";
         new File(filePath).delete();
@@ -314,7 +324,120 @@ public class PerformanceComparisonTest {
             forceGC();
         }
 
-        return new TestResult("Mmap持久化模式", heapUsed, writeTimeMs, readTimeMs);
+        return new TestResult("RogueMap.Mmap持久化模式", heapUsed, writeTimeMs, readTimeMs);
+    }
+
+    /**
+     * 测试Caffeine缓存模式
+     */
+    private static TestResult testCaffeineMode() {
+        System.out.println("测试 Caffeine 缓存模式...");
+
+        // 清理内存，建立基准
+        forceGC();
+        long baselineMemory = getCurrentHeapMemory();
+
+        // 创建Caffeine缓存，设置最大容量
+        Cache<Long, TestValueObject> cache = Caffeine.newBuilder()
+                .maximumSize(DATASET_SIZE)
+                .build();
+
+        Random random = new Random(RANDOM_SEED);
+
+        // 写入测试
+        long writeStartTime = System.nanoTime();
+        for (int i = 0; i < DATASET_SIZE; i++) {
+            long key = i + 1L;
+            TestValueObject value = createTestValue(i, random);
+            cache.put(key, value);
+        }
+        long writeEndTime = System.nanoTime();
+        long writeTimeMs = (writeEndTime - writeStartTime) / 1_000_000;
+
+        // 重置随机数，准备读取测试
+        random = new Random(RANDOM_SEED);
+
+        // 读取测试
+        long readStartTime = System.nanoTime();
+        for (int i = 0; i < DATASET_SIZE; i++) {
+            long key = i + 1L;
+            cache.getIfPresent(key);
+        }
+        long readEndTime = System.nanoTime();
+        long readTimeMs = (readEndTime - readStartTime) / 1_000_000;
+
+        // 强制GC，获取稳定的内存使用量
+        forceGC();
+        long usedMemory = getCurrentHeapMemory();
+        long heapUsed = usedMemory - baselineMemory;
+
+        System.out.printf("  Caffeine 缓存包含 %d 个条目%n", cache.estimatedSize());
+        System.out.printf("  写入耗时: %d ms%n", writeTimeMs);
+        System.out.printf("  读取耗时: %d ms%n", readTimeMs);
+        System.out.printf("  堆内存占用: %.2f MB%n", heapUsed / 1024.0 / 1024.0);
+
+        // 清理
+        cache.invalidateAll();
+        cache.cleanUp();
+        cache = null;
+        forceGC();
+
+        return new TestResult("Caffeine缓存模式", heapUsed, writeTimeMs, readTimeMs);
+    }
+
+    /**
+     * 测试FastUtil模式
+     */
+    private static TestResult testFastUtilMode() {
+        System.out.println("测试 FastUtil 模式...");
+
+        // 清理内存，建立基准
+        forceGC();
+        long baselineMemory = getCurrentHeapMemory();
+
+        // 创建FastUtil Long2ObjectOpenHashMap
+        Long2ObjectMap<TestValueObject> map = new Long2ObjectOpenHashMap<>(DATASET_SIZE);
+
+        Random random = new Random(RANDOM_SEED);
+
+        // 写入测试
+        long writeStartTime = System.nanoTime();
+        for (int i = 0; i < DATASET_SIZE; i++) {
+            long key = i + 1L;
+            TestValueObject value = createTestValue(i, random);
+            map.put(key, value);
+        }
+        long writeEndTime = System.nanoTime();
+        long writeTimeMs = (writeEndTime - writeStartTime) / 1_000_000;
+
+        // 重置随机数，准备读取测试
+        random = new Random(RANDOM_SEED);
+
+        // 读取测试
+        long readStartTime = System.nanoTime();
+        for (int i = 0; i < DATASET_SIZE; i++) {
+            long key = i + 1L;
+            map.get(key);
+        }
+        long readEndTime = System.nanoTime();
+        long readTimeMs = (readEndTime - readStartTime) / 1_000_000;
+
+        // 强制GC，获取稳定的内存使用量
+        forceGC();
+        long usedMemory = getCurrentHeapMemory();
+        long heapUsed = usedMemory - baselineMemory;
+
+        System.out.printf("  FastUtil Map 包含 %d 个条目%n", map.size());
+        System.out.printf("  写入耗时: %d ms%n", writeTimeMs);
+        System.out.printf("  读取耗时: %d ms%n", readTimeMs);
+        System.out.printf("  堆内存占用: %.2f MB%n", heapUsed / 1024.0 / 1024.0);
+
+        // 清理
+        map.clear();
+        map = null;
+        forceGC();
+
+        return new TestResult("FastUtil模式", heapUsed, writeTimeMs, readTimeMs);
     }
 
     /**
