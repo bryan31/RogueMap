@@ -7,7 +7,7 @@
 
     <groupId>com.yomahub</groupId>
     <artifactId>roguemap</artifactId>
-    <version>1.0.0-BETA1</version>
+    <version>1.0.0-BETA2</version>
     <packaging>jar</packaging>
 
     <name>RogueMap</name>
