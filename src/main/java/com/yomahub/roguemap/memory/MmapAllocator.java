@@ -53,7 +53,7 @@ public class MmapAllocator implements Allocator {
      */
     public MmapAllocator(String filePath, long fileSize, boolean isTemporary) {
         if (fileSize <= 0) {
-            throw new IllegalArgumentException("文件大小必须为正数");
+            throw new IllegalArgumentException("File size must be positive");
         }
 
         this.isTemporary = isTemporary;
@@ -63,7 +63,7 @@ public class MmapAllocator implements Allocator {
             this.file = TempFileManager.createTempFile();
         } else {
             if (filePath == null || filePath.isEmpty()) {
-                throw new IllegalArgumentException("文件路径不能为空");
+                throw new IllegalArgumentException("File path cannot be empty");
             }
             this.file = new File(filePath);
         }
@@ -131,7 +131,7 @@ public class MmapAllocator implements Allocator {
 
         } catch (Exception e) {
             close();
-            throw new RuntimeException("创建内存映射文件失败: " + file.getAbsolutePath(), e);
+            throw new RuntimeException("Failed to create memory mapped file: " + file.getAbsolutePath(), e);
         }
     }
 
@@ -194,7 +194,7 @@ public class MmapAllocator implements Allocator {
     @Override
     public long allocate(int size) {
         if (size <= 0) {
-            throw new IllegalArgumentException("大小必须为正数: " + size);
+            throw new IllegalArgumentException("Size must be positive: " + size);
         }
 
         // 使用 CAS 操作分配偏移量
@@ -273,7 +273,7 @@ public class MmapAllocator implements Allocator {
                 }
             }
         } catch (Exception e) {
-            throw new RuntimeException("关闭内存映射文件失败", e);
+            throw new RuntimeException("Failed to close memory mapped file", e);
         }
     }
 
@@ -307,15 +307,15 @@ public class MmapAllocator implements Allocator {
      */
     public String getStats() {
         StringBuilder sb = new StringBuilder();
-        sb.append("MmapAllocator 统计信息:\n");
-        sb.append("  文件路径: ").append(getFilePath()).append("\n");
-        sb.append("  文件大小: ").append(fileSize).append(" 字节\n");
-        sb.append("  分段数: ").append(segmentCount).append("\n");
-        sb.append("  分段大小: ").append(segmentSize).append(" 字节\n");
-        sb.append("  已使用: ").append(usedMemory()).append(" 字节\n");
-        sb.append("  可用: ").append(availableMemory()).append(" 字节\n");
-        sb.append("  利用率: ").append(String.format("%.2f%%", 100.0 * usedMemory() / fileSize));
-        sb.append("\n  临时文件: ").append(isTemporary ? "是" : "否");
+        sb.append("MmapAllocator Stats:\n");
+        sb.append("  File Path: ").append(getFilePath()).append("\n");
+        sb.append("  File Size: ").append(fileSize).append(" bytes\n");
+        sb.append("  Segment Count: ").append(segmentCount).append("\n");
+        sb.append("  Segment Size: ").append(segmentSize).append(" bytes\n");
+        sb.append("  Used: ").append(usedMemory()).append(" bytes\n");
+        sb.append("  Available: ").append(availableMemory()).append(" bytes\n");
+        sb.append("  Utilization: ").append(String.format("%.2f%%", 100.0 * usedMemory() / fileSize));
+        sb.append("\n  Temporary File: ").append(isTemporary ? "Yes" : "No");
         return sb.toString();
     }
 

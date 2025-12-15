@@ -6,13 +6,13 @@ import java.util.concurrent.locks.StampedLock;
 
 /**
  * 极致优化的Integer键索引 - 使用原始类型数组
- *
+ * <p>
  * 内存占用（100万条，负载因子0.75）：
  * - keys: 4 bytes × 1,333,333 = 5.3 MB
  * - addresses: 8 bytes × 1,333,333 = 10.7 MB
  * - sizes: 4 bytes × 1,333,333 = 5.3 MB
  * - 总计: ~21.3 MB（实际存储100万条约16MB）
- *
+ * <p>
  * 相比Long键索引，再节省25%内存
  */
 public class IntPrimitiveIndex implements Index<Integer> {
@@ -46,10 +46,10 @@ public class IntPrimitiveIndex implements Index<Integer> {
     @Override
     public long put(Integer key, long address, int valueSize) {
         if (key == null || key == EMPTY_KEY || key == DELETED_KEY) {
-            throw new IllegalArgumentException("无效的键: " + key);
+            throw new IllegalArgumentException("Invalid key: " + key);
         }
         if (address == 0) {
-            throw new IllegalArgumentException("无效的地址: 0");
+            throw new IllegalArgumentException("Invalid address: 0");
         }
 
         long stamp = lock.writeLock();
@@ -207,19 +207,19 @@ public class IntPrimitiveIndex implements Index<Integer> {
     @Override
     public int serialize(long address) {
         // 原始类型索引暂不支持序列化
-        throw new UnsupportedOperationException("IntPrimitiveIndex 暂不支持序列化");
+        throw new UnsupportedOperationException("IntPrimitiveIndex does not support serialization temporarily");
     }
 
     @Override
     public void deserialize(long address, int size) {
         // 原始类型索引暂不支持序列化
-        throw new UnsupportedOperationException("IntPrimitiveIndex 暂不支持序列化");
+        throw new UnsupportedOperationException("IntPrimitiveIndex does not support serialization temporarily");
     }
 
     @Override
     public void forEach(EntryConsumer action) {
         if (action == null) {
-            throw new IllegalArgumentException("Action 不能为 null");
+            throw new IllegalArgumentException("Action cannot be null");
         }
         long stamp = lock.readLock();
         try {

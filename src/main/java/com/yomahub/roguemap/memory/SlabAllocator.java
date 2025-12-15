@@ -5,7 +5,7 @@ import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * Slab 内存分配器，用于高效的堆外内存管理
- *
+ * <p>
  * 该分配器通过将分配分组到大小类别来减少碎片。
  * 每个大小类别维护一个空闲内存块池，用于快速分配/释放。
  */
@@ -21,7 +21,7 @@ public class SlabAllocator implements Allocator {
 
     public SlabAllocator(long maxMemory) {
         if (maxMemory <= 0) {
-            throw new IllegalArgumentException("maxMemory 必须为正数");
+            throw new IllegalArgumentException("maxMemory must be positive");
         }
         this.maxMemory = maxMemory;
         this.totalAllocated = new AtomicLong(0);
@@ -35,7 +35,7 @@ public class SlabAllocator implements Allocator {
     @Override
     public long allocate(int size) {
         if (size <= 0) {
-            throw new IllegalArgumentException("大小必须为正数: " + size);
+            throw new IllegalArgumentException("Size must be positive: " + size);
         }
 
         // 检查内存限制
@@ -182,12 +182,12 @@ public class SlabAllocator implements Allocator {
      */
     public String getStats() {
         StringBuilder sb = new StringBuilder();
-        sb.append("SlabAllocator 统计信息:\n");
-        sb.append("  总分配: ").append(totalAllocated()).append(" 字节\n");
-        sb.append("  已使用内存: ").append(usedMemory()).append(" 字节\n");
-        sb.append("  可用内存: ").append(availableMemory()).append(" 字节\n");
-        sb.append("  最大内存: ").append(maxMemory).append(" 字节\n");
-        sb.append("  利用率: ").append(String.format("%.2f%%", 100.0 * usedMemory() / maxMemory));
+        sb.append("SlabAllocator Stats:\n");
+        sb.append("  Total Allocated: ").append(totalAllocated()).append(" bytes\n");
+        sb.append("  Used Memory: ").append(usedMemory()).append(" bytes\n");
+        sb.append("  Available Memory: ").append(availableMemory()).append(" bytes\n");
+        sb.append("  Max Memory: ").append(maxMemory).append(" bytes\n");
+        sb.append("  Utilization: ").append(String.format("%.2f%%", 100.0 * usedMemory() / maxMemory));
         return sb.toString();
     }
 }

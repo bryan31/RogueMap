@@ -46,10 +46,10 @@ public class LongPrimitiveIndex implements Index<Long> {
     @Override
     public long put(Long key, long address, int valueSize) {
         if (key == null || key == EMPTY_KEY || key == DELETED_KEY) {
-            throw new IllegalArgumentException("无效的键: " + key);
+            throw new IllegalArgumentException("Invalid key: " + key);
         }
         if (address == 0) {
-            throw new IllegalArgumentException("无效的地址: 0");
+            throw new IllegalArgumentException("Invalid address: 0");
         }
 
         long stamp = lock.writeLock();
@@ -211,19 +211,19 @@ public class LongPrimitiveIndex implements Index<Long> {
     @Override
     public int serialize(long address) {
         // 原始类型索引暂不支持序列化
-        throw new UnsupportedOperationException("LongPrimitiveIndex 暂不支持序列化");
+        throw new UnsupportedOperationException("LongPrimitiveIndex does not support serialization temporarily");
     }
 
     @Override
     public void deserialize(long address, int size) {
         // 原始类型索引暂不支持序列化
-        throw new UnsupportedOperationException("LongPrimitiveIndex 暂不支持序列化");
+        throw new UnsupportedOperationException("LongPrimitiveIndex does not support serialization temporarily");
     }
 
     @Override
     public void forEach(EntryConsumer action) {
         if (action == null) {
-            throw new IllegalArgumentException("Action 不能为 null");
+            throw new IllegalArgumentException("Action cannot be null");
         }
         long stamp = lock.readLock();
         try {

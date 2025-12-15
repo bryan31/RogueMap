@@ -47,19 +47,19 @@ public class RogueMap<K, V> implements AutoCloseable {
      */
     public V put(K key, V value) {
         if (key == null) {
-            throw new IllegalArgumentException("键不能为 null");
+            throw new IllegalArgumentException("Key cannot be null");
         }
 
         // 计算所需大小
         int valueSize = valueCodec.calculateSize(value);
         if (valueSize < 0) {
-            throw new IllegalStateException("无法确定值的大小");
+            throw new IllegalStateException("Cannot determine value size");
         }
 
         // 为值分配内存
         long address = allocator.allocate(valueSize);
         if (address == 0) {
-            throw new OutOfMemoryError("分配 " + valueSize + " 字节失败");
+            throw new OutOfMemoryError("Failed to allocate " + valueSize + " bytes");
         }
 
         try {
@@ -328,7 +328,7 @@ public class RogueMap<K, V> implements AutoCloseable {
          */
         public B initialCapacity(int initialCapacity) {
             if (initialCapacity <= 0) {
-                throw new IllegalArgumentException("initialCapacity 必须为正数");
+                throw new IllegalArgumentException("initialCapacity must be positive");
             }
             this.initialCapacity = initialCapacity;
             return (B) this;
@@ -388,7 +388,7 @@ public class RogueMap<K, V> implements AutoCloseable {
             } else if (indexType == 3) {
                 return (Index<K>) new IntPrimitiveIndex(initialCapacity);
             }
-            throw new IllegalStateException("未知的索引类型: " + indexType);
+            throw new IllegalStateException("Unknown index type: " + indexType);
         }
 
         /**
@@ -407,7 +407,7 @@ public class RogueMap<K, V> implements AutoCloseable {
                     return (Index<K>) new IntPrimitiveIndex(initialCapacity);
                 } else {
                     throw new IllegalStateException(
-                            "原始类型索引仅支持 Long 或 Integer 键，请使用 PrimitiveCodecs.LONG 或 PrimitiveCodecs.INTEGER");
+                            "Primitive index only supports Long or Integer keys, please use PrimitiveCodecs.LONG or PrimitiveCodecs.INTEGER" );
                 }
             } else if (useSegmentedIndex) {
                 return new SegmentedHashIndex<>(keyCodec, segmentCount, initialCapacity);
@@ -446,7 +446,7 @@ public class RogueMap<K, V> implements AutoCloseable {
          */
         public MmapBuilder<K, V> persistent(String filePath) {
             if (filePath == null || filePath.isEmpty()) {
-                throw new IllegalArgumentException("文件路径不能为空");
+                throw new IllegalArgumentException("File path cannot be empty");
             }
             this.persistentFilePath = filePath;
             this.isTemporary = false;
@@ -473,7 +473,7 @@ public class RogueMap<K, V> implements AutoCloseable {
          */
         public MmapBuilder<K, V> allocateSize(long size) {
             if (size <= 0) {
-                throw new IllegalArgumentException("分配大小必须为正数");
+                throw new IllegalArgumentException("Allocate size must be positive");
             }
             this.allocateSize = size;
             return this;
@@ -482,15 +482,15 @@ public class RogueMap<K, V> implements AutoCloseable {
         @Override
         public RogueMap<K, V> build() {
             if (keyCodec == null) {
-                throw new IllegalStateException("必须设置键编解码器");
+                throw new IllegalStateException("Key codec must be set");
             }
             if (valueCodec == null) {
-                throw new IllegalStateException("必须设置值编解码器");
+                throw new IllegalStateException("Value codec must be set");
             }
 
             // 临时文件模式不需要指定路径
             if (!isTemporary && (persistentFilePath == null || persistentFilePath.isEmpty())) {
-                throw new IllegalStateException("MMAP 模式必须设置文件路径，请使用 persistent(filePath) 或 temporary()");
+                throw new IllegalStateException("MMAP mode must set file path, please use persistent(filePath) or temporary()");
             }
 
             // 创建 MmapAllocator（临时模式会自动生成文件路径）
@@ -550,7 +550,7 @@ public class RogueMap<K, V> implements AutoCloseable {
          */
         public OffHeapBuilder<K, V> maxMemory(long maxMemory) {
             if (maxMemory <= 0) {
-                throw new IllegalArgumentException("maxMemory 必须为正数");
+                throw new IllegalArgumentException("maxMemory must be positive");
             }
             this.maxMemory = maxMemory;
             return this;
@@ -559,10 +559,10 @@ public class RogueMap<K, V> implements AutoCloseable {
         @Override
         public RogueMap<K, V> build() {
             if (keyCodec == null) {
-                throw new IllegalStateException("必须设置键编解码器");
+                throw new IllegalStateException("Key codec must be set");
             }
             if (valueCodec == null) {
-                throw new IllegalStateException("必须设置值编解码器");
+                throw new IllegalStateException("Value codec must be set");
             }
 
             // 堆外内存模式

@@ -43,7 +43,7 @@ public class SegmentedHashIndex<K> implements Index<K> {
     @SuppressWarnings("unchecked")
     public SegmentedHashIndex(Codec<K> keyCodec, int segmentCount, int initialCapacityPerSegment) {
         if (segmentCount <= 0 || (segmentCount & (segmentCount - 1)) != 0) {
-            throw new IllegalArgumentException("段数必须是 2 的幂次方");
+            throw new IllegalArgumentException("Segment count must be a power of 2");
         }
 
         this.segments = new Segment[segmentCount];
@@ -59,10 +59,10 @@ public class SegmentedHashIndex<K> implements Index<K> {
     @Override
     public long put(K key, long address, int valueSize) {
         if (key == null) {
-            throw new IllegalArgumentException("键不能为 null");
+            throw new IllegalArgumentException("Key cannot be null");
         }
         if (address == 0) {
-            throw new IllegalArgumentException("无效的地址: 0");
+            throw new IllegalArgumentException("Invalid address: 0");
         }
 
         Segment<K> segment = getSegment(key);
@@ -158,7 +158,7 @@ public class SegmentedHashIndex<K> implements Index<K> {
     @Override
     public int serializedSize() {
         if (keyCodec == null) {
-            throw new UnsupportedOperationException("无法序列化：keyCodec 为 null");
+            throw new UnsupportedOperationException("Serialization not supported: keyCodec is null");
         }
 
         int totalSize = 8;  // segment count (4 bytes) + total entry count (4 bytes)
@@ -173,7 +173,7 @@ public class SegmentedHashIndex<K> implements Index<K> {
     @Override
     public int serialize(long address) {
         if (keyCodec == null) {
-            throw new UnsupportedOperationException("无法序列化：keyCodec 为 null");
+            throw new UnsupportedOperationException("Serialization not supported: keyCodec is null");
         }
 
         long currentAddr = address;
@@ -198,7 +198,7 @@ public class SegmentedHashIndex<K> implements Index<K> {
     @Override
     public void deserialize(long address, int totalSize) {
         if (keyCodec == null) {
-            throw new UnsupportedOperationException("无法反序列化：keyCodec 为 null");
+            throw new UnsupportedOperationException("Deserialization not supported: keyCodec is null");
         }
 
         long currentAddr = address;
@@ -214,7 +214,7 @@ public class SegmentedHashIndex<K> implements Index<K> {
         // 验证 segment count
         if (segmentCount != segments.length) {
             throw new IllegalStateException(
-                "段数不匹配：期望 " + segments.length + "，实际 " + segmentCount);
+                "Segment number mismatch: expected " + segments.length + ", actual " + segmentCount);
         }
 
         // 清空所有 segment
@@ -258,7 +258,7 @@ public class SegmentedHashIndex<K> implements Index<K> {
                     K key = entry.getKey();
                     int keySize = keyCodec.calculateSize(key);
                     if (keySize < 0) {
-                        throw new IllegalStateException("键的大小不能为负数");
+                        throw new IllegalStateException("Key size cannot be negative");
                     }
                     size += 4 + keySize + 8 + 4;
                 }
@@ -284,7 +284,7 @@ public class SegmentedHashIndex<K> implements Index<K> {
 
                     int keySize = keyCodec.calculateSize(key);
                     if (keySize < 0) {
-                        throw new IllegalStateException("键的大小不能为负数");
+                        throw new IllegalStateException("Key size cannot be negative");
                     }
 
                     // key size
@@ -362,7 +362,7 @@ public class SegmentedHashIndex<K> implements Index<K> {
 
                     int keySize = keyCodec.calculateSize(key);
                     if (keySize < 0) {
-                        throw new IllegalStateException("键的大小不能为负数");
+                        throw new IllegalStateException("Key size cannot be negative");
                     }
 
                     // key size
@@ -596,7 +596,7 @@ public class SegmentedHashIndex<K> implements Index<K> {
 
         // 验证 segment count
         if (segmentCount != segments.length) {
-            throw new IllegalStateException("段数不匹配: 期望 " + segments.length + ", 实际 " + segmentCount);
+            throw new IllegalStateException("Segment number mismatch: expected " + segments.length + ", actual " + segmentCount);
         }
 
         // 清空所有 segment
@@ -647,7 +647,7 @@ public class SegmentedHashIndex<K> implements Index<K> {
     @Override
     public void forEach(EntryConsumer action) {
         if (action == null) {
-            throw new IllegalArgumentException("Action 不能为 null");
+            throw new IllegalArgumentException("Action cannot be null");
         }
         for (Segment<K> segment : segments) {
             long stamp = segment.lock.readLock();

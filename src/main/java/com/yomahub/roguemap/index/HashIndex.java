@@ -40,10 +40,10 @@ public class HashIndex<K> implements Index<K> {
     @Override
     public long put(K key, long address, int valueSize) {
         if (key == null) {
-            throw new IllegalArgumentException("键不能为 null");
+            throw new IllegalArgumentException("Key cannot be null");
         }
         if (address == 0) {
-            throw new IllegalArgumentException("无效的地址: 0");
+            throw new IllegalArgumentException("Invalid address: 0");
         }
 
         Entry newEntry = new Entry(address, valueSize);
@@ -127,7 +127,7 @@ public class HashIndex<K> implements Index<K> {
     @Override
     public int serializedSize() {
         if (keyCodec == null) {
-            throw new UnsupportedOperationException("无法序列化：keyCodec 为 null");
+            throw new UnsupportedOperationException("Serialization not supported: keyCodec is null");
         }
 
         int totalSize = 4;  // entry count (4 bytes)
@@ -136,7 +136,7 @@ public class HashIndex<K> implements Index<K> {
             K key = entry.getKey();
             int keySize = keyCodec.calculateSize(key);
             if (keySize < 0) {
-                throw new IllegalStateException("键的大小不能为负数");
+                throw new IllegalStateException("Key size cannot be negative");
             }
             // 4 bytes (key size) + key bytes + 8 bytes (address) + 4 bytes (size)
             totalSize += 4 + keySize + 8 + 4;
@@ -148,7 +148,7 @@ public class HashIndex<K> implements Index<K> {
     @Override
     public int serialize(long address) {
         if (keyCodec == null) {
-            throw new UnsupportedOperationException("无法序列化：keyCodec 为 null");
+            throw new UnsupportedOperationException("Serialization not supported: keyCodec is null");
         }
 
         long currentAddr = address;
@@ -164,7 +164,7 @@ public class HashIndex<K> implements Index<K> {
             // 计算键大小并编码
             int keySize = keyCodec.calculateSize(key);
             if (keySize < 0) {
-                throw new IllegalStateException("键的大小不能为负数");
+                throw new IllegalStateException("Key size cannot be negative");
             }
 
             // 写入 key size
@@ -190,7 +190,7 @@ public class HashIndex<K> implements Index<K> {
     @Override
     public void deserialize(long address, int totalSize) {
         if (keyCodec == null) {
-            throw new UnsupportedOperationException("无法反序列化：keyCodec 为 null");
+            throw new UnsupportedOperationException("Deserialization not supported: keyCodec is null");
         }
 
         map.clear();
@@ -228,7 +228,7 @@ public class HashIndex<K> implements Index<K> {
     @Override
     public int serializeWithOffsets(long address, long baseAddress) {
         if (keyCodec == null) {
-            throw new UnsupportedOperationException("无法序列化：keyCodec 为 null");
+            throw new UnsupportedOperationException("Serialization not supported: keyCodec is null");
         }
 
         long currentAddr = address;
@@ -244,7 +244,7 @@ public class HashIndex<K> implements Index<K> {
             // 计算键大小并编码
             int keySize = keyCodec.calculateSize(key);
             if (keySize < 0) {
-                throw new IllegalStateException("键的大小不能为负数");
+                throw new IllegalStateException("Key size cannot be negative");
             }
 
             // 写入 key size
@@ -271,7 +271,7 @@ public class HashIndex<K> implements Index<K> {
     @Override
     public void deserializeWithOffsets(long address, int totalSize, long baseAddress) {
         if (keyCodec == null) {
-            throw new UnsupportedOperationException("无法反序列化：keyCodec 为 null");
+            throw new UnsupportedOperationException("Deserialization not supported: keyCodec is null");
         }
 
         map.clear();
@@ -312,7 +312,7 @@ public class HashIndex<K> implements Index<K> {
     @Override
     public void forEach(EntryConsumer action) {
         if (action == null) {
-            throw new IllegalArgumentException("Action 不能为 null");
+            throw new IllegalArgumentException("Action cannot be null");
         }
         for (Entry entry : map.values()) {
             action.accept(entry.address, entry.size);

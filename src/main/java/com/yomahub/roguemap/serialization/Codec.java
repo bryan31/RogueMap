@@ -48,6 +48,6 @@ public interface Codec<T> {
      * @return 固定的字节大小
      */
     default int getFixedSize() {
-        throw new UnsupportedOperationException("不是固定大小的编解码器");
+        throw new UnsupportedOperationException("Codec is not fixed size");
     }
 }

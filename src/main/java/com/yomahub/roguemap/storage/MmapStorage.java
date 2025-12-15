@@ -5,7 +5,7 @@ import com.yomahub.roguemap.memory.UnsafeOps;
 
 /**
  * 内存映射文件存储引擎
- *
+ * <p>
  * 使用 MappedByteBuffer 将文件映射到内存，利用操作系统页缓存
  * 适合大数据量持久化场景
  */
@@ -15,7 +15,7 @@ public class MmapStorage implements StorageEngine {
 
     public MmapStorage(MmapAllocator allocator) {
         if (allocator == null) {
-            throw new IllegalArgumentException("Allocator 不能为 null");
+            throw new IllegalArgumentException("Allocator cannot be null");
         }
         this.allocator = allocator;
     }
@@ -23,13 +23,13 @@ public class MmapStorage implements StorageEngine {
     @Override
     public void put(long address, byte[] data, int offset, int length) {
         if (address == 0) {
-            throw new IllegalArgumentException("无效的地址: 0");
+            throw new IllegalArgumentException("Invalid address: 0");
         }
         if (data == null) {
-            throw new IllegalArgumentException("数据不能为 null");
+            throw new IllegalArgumentException("Data cannot be null");
         }
         if (offset < 0 || length < 0 || offset + length > data.length) {
-            throw new IllegalArgumentException("无效的偏移量或长度");
+            throw new IllegalArgumentException("Invalid offset or length");
         }
 
         UnsafeOps.copyFromArray(data, offset, address, length);
@@ -38,10 +38,10 @@ public class MmapStorage implements StorageEngine {
     @Override
     public byte[] get(long address, int length) {
         if (address == 0) {
-            throw new IllegalArgumentException("无效的地址: 0");
+            throw new IllegalArgumentException("Invalid address: 0");
         }
         if (length < 0) {
-            throw new IllegalArgumentException("无效的长度: " + length);
+            throw new IllegalArgumentException("Invalid length: " + length);
         }
 
         byte[] data = new byte[length];
