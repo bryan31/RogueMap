@@ -83,7 +83,7 @@ RogueMap 将数据存储在 **堆外内存** 或 **内存映射文件** 中，�
 <dependency>
     <groupId>com.yomahub</groupId>
     <artifactId>roguemap</artifactId>
-    <version>1.0.0-BETA1</version>
+    <version>1.0.0-BETA2</version>
 </dependency>
 ```
 
