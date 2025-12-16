@@ -112,12 +112,13 @@ public class RogueMapVsMapDBComparisonTest {
             long writeEndTime = System.nanoTime();
             writeTimeMs = (writeEndTime - writeStartTime) / 1_000_000;
 
-            random = new Random(RANDOM_SEED);
+            // 准备随机读取的key列表
+            long[] randomKeys = generateRandomKeys(DATASET_SIZE, RANDOM_SEED);
 
-            // 读取测试
+            // 随机读取测试
             long readStartTime = System.nanoTime();
             for (int i = 0; i < DATASET_SIZE; i++) {
-                long key = i + 1L;
+                long key = randomKeys[i];
                 map.get(key);
             }
             long readEndTime = System.nanoTime();
@@ -175,12 +176,13 @@ public class RogueMapVsMapDBComparisonTest {
             long writeEndTime = System.nanoTime();
             writeTimeMs = (writeEndTime - writeStartTime) / 1_000_000;
 
-            random = new Random(RANDOM_SEED);
+            // 准备随机读取的key列表
+            long[] randomKeys = generateRandomKeys(DATASET_SIZE, RANDOM_SEED);
 
-            // 读取测试
+            // 随机读取测试
             long readStartTime = System.nanoTime();
             for (int i = 0; i < DATASET_SIZE; i++) {
-                long key = i + 1L;
+                long key = randomKeys[i];
                 map.get(key);
             }
             long readEndTime = System.nanoTime();
@@ -241,12 +243,13 @@ public class RogueMapVsMapDBComparisonTest {
             long writeEndTime = System.nanoTime();
             writeTimeMs = (writeEndTime - writeStartTime) / 1_000_000;
 
-            random = new Random(RANDOM_SEED);
+            // 准备随机读取的key列表
+            long[] randomKeys = generateRandomKeys(DATASET_SIZE, RANDOM_SEED);
 
-            // 读取测试
+            // 随机读取测试
             long readStartTime = System.nanoTime();
             for (int i = 0; i < DATASET_SIZE; i++) {
-                long key = i + 1L;
+                long key = randomKeys[i];
                 map.get(key);
             }
             long readEndTime = System.nanoTime();
@@ -309,12 +312,13 @@ public class RogueMapVsMapDBComparisonTest {
             long writeEndTime = System.nanoTime();
             writeTimeMs = (writeEndTime - writeStartTime) / 1_000_000;
 
-            random = new Random(RANDOM_SEED);
+            // 准备随机读取的key列表
+            long[] randomKeys = generateRandomKeys(DATASET_SIZE, RANDOM_SEED);
 
-            // 读取测试
+            // 随机读取测试
             long readStartTime = System.nanoTime();
             for (int i = 0; i < DATASET_SIZE; i++) {
-                long key = i + 1L;
+                long key = randomKeys[i];
                 map.get(key);
             }
             long readEndTime = System.nanoTime();
@@ -379,12 +383,13 @@ public class RogueMapVsMapDBComparisonTest {
             long writeEndTime = System.nanoTime();
             writeTimeMs = (writeEndTime - writeStartTime) / 1_000_000;
 
-            random = new Random(RANDOM_SEED);
+            // 准备随机读取的key列表
+            long[] randomKeys = generateRandomKeys(DATASET_SIZE, RANDOM_SEED);
 
-            // 读取测试
+            // 随机读取测试
             long readStartTime = System.nanoTime();
             for (int i = 0; i < DATASET_SIZE; i++) {
-                long key = i + 1L;
+                long key = randomKeys[i];
                 map.get(key);
             }
             long readEndTime = System.nanoTime();
@@ -449,12 +454,13 @@ public class RogueMapVsMapDBComparisonTest {
             long writeEndTime = System.nanoTime();
             writeTimeMs = (writeEndTime - writeStartTime) / 1_000_000;
 
-            random = new Random(RANDOM_SEED);
+            // 准备随机读取的key列表
+            long[] randomKeys = generateRandomKeys(DATASET_SIZE, RANDOM_SEED);
 
-            // 读取测试
+            // 随机读取测试
             long readStartTime = System.nanoTime();
             for (int i = 0; i < DATASET_SIZE; i++) {
-                long key = i + 1L;
+                long key = randomKeys[i];
                 map.get(key);
             }
             long readEndTime = System.nanoTime();
@@ -477,6 +483,26 @@ public class RogueMapVsMapDBComparisonTest {
         }
 
         return new TestResult("MapDB 持久化", heapUsed, writeTimeMs, readTimeMs);
+    }
+
+    /**
+     * 生成随机的key数组用于随机读取测试
+     */
+    private static long[] generateRandomKeys(int size, long seed) {
+        long[] keys = new long[size];
+        // 先填充顺序key
+        for (int i = 0; i < size; i++) {
+            keys[i] = i + 1L;
+        }
+        // Fisher-Yates 洗牌算法打乱顺序
+        Random random = new Random(seed + 1); // 使用不同的种子避免与数据生成冲突
+        for (int i = size - 1; i > 0; i--) {
+            int j = random.nextInt(i + 1);
+            long temp = keys[i];
+            keys[i] = keys[j];
+            keys[j] = temp;
+        }
+        return keys;
     }
 
     /**
