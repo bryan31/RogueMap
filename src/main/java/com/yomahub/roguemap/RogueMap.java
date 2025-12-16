@@ -437,7 +437,7 @@ public class RogueMap<K, V> implements AutoCloseable {
      */
     public static class MmapBuilder<K, V> extends BaseBuilder<K, V, MmapBuilder<K, V>> {
         private String persistentFilePath;
-        private long allocateSize = 10L * 1024 * 1024 * 1024; // 默认 10GB
+        private long allocateSize = 2L * 1024 * 1024 * 1024; // 默认 2GB
         private boolean isTemporary = false;
 
         private MmapBuilder() {
