@@ -1,5 +1,7 @@
 package com.yomahub.roguemap.index;
 
+import com.yomahub.roguemap.func.EntryConsumer;
+
 /**
  * 索引接口，用于键值查找
  *
@@ -108,6 +110,13 @@ public interface Index<K> {
     void clear();
 
     /**
+     * 从索引中移除所有条目，并对每个移除的条目执行操作
+     *
+     * @param action 对每个被移除条目执行的操作 (address, size)
+     */
+    void clear(EntryConsumer action);
+
+    /**
      * 关闭索引并释放资源
      */
     void close();
@@ -152,4 +161,11 @@ public interface Index<K> {
      * @param baseAddress 基础地址，用于重新计算内存地址
      */
     void deserializeWithOffsets(long address, int size, long baseAddress);
+
+    /**
+     * 遍历索引中的所有条目
+     *
+     * @param action 对每个条目执行的操作 (address, size)
+     */
+    void forEach(EntryConsumer action);
 }

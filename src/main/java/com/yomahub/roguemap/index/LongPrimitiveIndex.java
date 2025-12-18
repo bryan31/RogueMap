@@ -1,5 +1,6 @@
 package com.yomahub.roguemap.index;
 
+import com.yomahub.roguemap.func.EntryConsumer;
 import com.yomahub.roguemap.memory.UnsafeOps;
 import java.util.concurrent.locks.StampedLock;
 
@@ -45,10 +46,10 @@ public class LongPrimitiveIndex implements Index<Long> {
     @Override
     public long put(Long key, long address, int valueSize) {
         if (key == null || key == EMPTY_KEY || key == DELETED_KEY) {
-            throw new IllegalArgumentException("无效的键: " + key);
+            throw new IllegalArgumentException("Invalid key: " + key);
         }
         if (address == 0) {
-            throw new IllegalArgumentException("无效的地址: 0");
+            throw new IllegalArgumentException("Invalid address: 0");
         }
 
         long stamp = lock.writeLock();
@@ -249,8 +250,21 @@ public class LongPrimitiveIndex implements Index<Long> {
 
     @Override
     public void clear() {
+        clear(null);
+    }
+
+    @Override
+    public void clear(EntryConsumer action) {
         long stamp = lock.writeLock();
         try {
+            if (action != null) {
+                for (int i = 0; i < keys.length; i++) {
+                    long key = keys[i];
+                    if (key != EMPTY_KEY && key != DELETED_KEY) {
+                        action.accept(addresses[i], sizes[i]);
+                    }
+                }
+            }
             keys = new long[DEFAULT_CAPACITY];
             addresses = new long[DEFAULT_CAPACITY];
             sizes = new int[DEFAULT_CAPACITY];
@@ -281,13 +295,33 @@ public class LongPrimitiveIndex implements Index<Long> {
     @Override
     public int serialize(long address) {
         // 原始类型索引暂不支持序列化
-        throw new UnsupportedOperationException("LongPrimitiveIndex 暂不支持序列化");
+        throw new UnsupportedOperationException("LongPrimitiveIndex does not support serialization temporarily");
     }
 
     @Override
     public void deserialize(long address, int size) {
         // 原始类型索引暂不支持序列化
-        throw new UnsupportedOperationException("LongPrimitiveIndex 暂不支持序列化");
+        throw new UnsupportedOperationException("LongPrimitiveIndex does not support serialization temporarily");
+    }
+
+    @Override
+    public void forEach(EntryConsumer action) {
+        if (action == null) {
+            throw new IllegalArgumentException("Action cannot be null");
+        }
+        long stamp = lock.readLock();
+        try {
+            for (int i = 0; i < keys.length; i++) {
+                long key = keys[i];
+                if (key != EMPTY_KEY && key != DELETED_KEY) {
+                    long addr = addresses[i];
+                    int sz = sizes[i];
+                    action.accept(addr, sz);
+                }
+            }
+        } finally {
+            lock.unlockRead(stamp);
+        }
     }
 
     /**

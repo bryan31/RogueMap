@@ -21,7 +21,7 @@ public class UnsafeOps {
             field.setAccessible(true);
             UNSAFE = (Unsafe) field.get(null);
         } catch (Exception e) {
-            throw new RuntimeException("获取 Unsafe 实例失败", e);
+            throw new RuntimeException("Failed to get Unsafe instance", e);
         }
     }
 
@@ -33,11 +33,11 @@ public class UnsafeOps {
      */
     public static long allocate(long size) {
         if (size <= 0) {
-            throw new IllegalArgumentException("大小必须为正数: " + size);
+            throw new IllegalArgumentException("Size must be positive: " + size);
         }
         long address = UNSAFE.allocateMemory(size);
         if (address == 0) {
-            throw new OutOfMemoryError("分配 " + size + " 字节失败");
+            throw new OutOfMemoryError("Failed to allocate " + size + " bytes");
         }
         return address;
     }
@@ -51,11 +51,11 @@ public class UnsafeOps {
      */
     public static long reallocate(long address, long newSize) {
         if (newSize <= 0) {
-            throw new IllegalArgumentException("大小必须为正数: " + newSize);
+            throw new IllegalArgumentException("Size must be positive: " + newSize);
         }
         long newAddress = UNSAFE.reallocateMemory(address, newSize);
         if (newAddress == 0) {
-            throw new OutOfMemoryError("重新分配到 " + newSize + " 字节失败");
+            throw new OutOfMemoryError("Failed to reallocate to " + newSize + " bytes");
         }
         return newAddress;
     }
@@ -205,7 +205,7 @@ public class UnsafeOps {
      */
     public static long getDirectBufferAddress(ByteBuffer buffer) {
         if (!buffer.isDirect()) {
-            throw new IllegalArgumentException("Buffer 必须是 direct 类型");
+            throw new IllegalArgumentException("Buffer must be direct");
         }
         return ((sun.nio.ch.DirectBuffer) buffer).address();
     }

@@ -47,7 +47,7 @@ public class TempFileManager {
 
             return tempFile;
         } catch (Exception e) {
-            throw new RuntimeException("创建临时文件失败", e);
+            throw new RuntimeException("Failed to create temp file", e);
         }
     }
 
@@ -82,7 +82,7 @@ public class TempFileManager {
                 }
             } catch (Exception e) {
                 // Shutdown 过程中不抛出异常
-                System.err.println("清理临时文件失败: " + file.getAbsolutePath() + ", " + e.getMessage());
+                System.err.println("Failed to clean up temp file: " + file.getAbsolutePath() + ", " + e.getMessage());
             }
         }, "RogueMap-TempFile-Cleanup");
 
@@ -124,10 +124,10 @@ public class TempFileManager {
                 invokeCleaner.invoke(unsafe, buffer);
             } catch (Exception ex) {
                 // 如果都失败了，记录警告
-                System.err.println("警告: 无法强制 unmap MappedByteBuffer: " + ex.getMessage());
+                System.err.println("Warning: Failed to force unmap MappedByteBuffer: " + ex.getMessage());
             }
         } catch (Exception e) {
-            System.err.println("警告: unmap MappedByteBuffer 时发生异常: " + e.getMessage());
+            System.err.println("Warning: Exception occurred while unmapping MappedByteBuffer: " + e.getMessage());
         }
     }
 
@@ -164,7 +164,7 @@ public class TempFileManager {
                 .forEach(path -> {
                     try {
                         Files.delete(path);
-                        System.out.println("清理过期临时文件: " + path.getFileName());
+                        System.out.println("Cleaning up old temp file: " + path.getFileName());
                     } catch (IOException e) {
                         // 忽略删除失败的情况
                     }
@@ -172,7 +172,7 @@ public class TempFileManager {
             }
         } catch (Exception e) {
             // 清理失败不影响程序运行
-            System.err.println("清理过期临时文件时发生错误: " + e.getMessage());
+            System.err.println("Error occurred while cleaning up old temp files: " + e.getMessage());
         }
     }
 
