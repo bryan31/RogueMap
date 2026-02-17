@@ -11,7 +11,7 @@
 
 </div>
 
-**RogueMap** 是一个高性能的嵌入式键值存储引擎，突破 HashMap 的内存墙，提供堆外内存和持久化存储能力。
+**RogueMap** 是一个高性能的嵌入式键值存储引擎，突破 HashMap 的内存墙，提供内存映射文件持久化存储能力。
 
 ## 🎯 为什么选择 RogueMap？
 
@@ -27,7 +27,7 @@
 
 ### RogueMap 的突破
 
-RogueMap 将数据存储在 **堆外内存** 或 **内存映射文件** 中，让你享受 HashMap 的简单 API，同时获得超越其限制的能力：
+RogueMap 将数据存储在 **内存映射文件** 中，让你享受 HashMap 的简单 API，同时获得超越其限制的能力：
 
 - ✅ **无限容量** - 突破 JVM 堆限制，轻松处理 100GB+ 数据集
 - ✅ **零 GC 压力** - 堆内存占用减少 **84.7%**，告别 Full GC 噩梦
@@ -65,7 +65,7 @@ RogueMap 将数据存储在 **堆外内存** 或 **内存映射文件** 中，�
 
 ## ✨ 特性
 
-- ✅ **多种存储模式** - 支持 堆外内存、内存映射文件、内存映射临时文件 三种模式
+- ✅ **多种存储模式** - 支持 内存映射文件持久化、内存映射临时文件 两种模式
 - ✅ **持久化支持** - Mmap 模式支持数据持久化到磁盘，支持自动恢复
 - ✅ **临时文件模式** - 支持自动清理的临时文件存储
 - ✅ **零拷贝序列化** - 原始类型直接内存布局，无序列化开销
@@ -88,42 +88,6 @@ RogueMap 将数据存储在 **堆外内存** 或 **内存映射文件** 中，�
 ```
 
 ### 基本使用
-
-#### OffHeap 模式（堆外内存）
-
-```java
-import com.yomahub.roguemap.RogueMap;
-import com.yomahub.roguemap.serialization.PrimitiveCodecs;
-import com.yomahub.roguemap.serialization.StringCodec;
-
-// 创建一个 String -> Long 的堆外内存 Map
-try (RogueMap<String, Long> map = RogueMap.<String, Long>offHeap()
-        .keyCodec(StringCodec.INSTANCE)
-        .valueCodec(PrimitiveCodecs.LONG)
-        .maxMemory(100 * 1024 * 1024) // 100MB
-        .build()) {
-
-    // 存储数据
-    map.put("user1", 1000L);
-    map.put("user2", 2000L);
-
-    // 读取数据
-    Long score = map.get("user1");
-    System.out.println("Score: " + score);
-
-    // 更新数据
-    map.put("user1", 1500L);
-
-    // 删除数据
-    map.remove("user2");
-
-    // 检查存在
-    boolean exists = map.containsKey("user1");
-
-    // 获取大小
-    int size = map.size();
-}
-```
 
 #### Mmap 临时文件模式
 
@@ -170,25 +134,29 @@ RogueMap 提供了零拷贝的原始类型编解码器：
 
 ```java
 // Long 类型（高性能）
-RogueMap<Long, Long> longMap = RogueMap.<Long, Long>offHeap()
+RogueMap<Long, Long> longMap = RogueMap.<Long, Long>mmap()
+    .temporary()
     .keyCodec(PrimitiveCodecs.LONG)
     .valueCodec(PrimitiveCodecs.LONG)
     .build();
 
 // Integer 类型
-RogueMap<Integer, Integer> intMap = RogueMap.<Integer, Integer>offHeap()
+RogueMap<Integer, Integer> intMap = RogueMap.<Integer, Integer>mmap()
+    .temporary()
     .keyCodec(PrimitiveCodecs.INTEGER)
     .valueCodec(PrimitiveCodecs.INTEGER)
     .build();
 
 // String 类型
-RogueMap<String, String> stringMap = RogueMap.<String, String>offHeap()
+RogueMap<String, String> stringMap = RogueMap.<String, String>mmap()
+    .temporary()
     .keyCodec(StringCodec.INSTANCE)
     .valueCodec(StringCodec.INSTANCE)
     .build();
 
 // 混合类型
-RogueMap<String, Double> mixedMap = RogueMap.<String, Double>offHeap()
+RogueMap<String, Double> mixedMap = RogueMap.<String, Double>mmap()
+    .temporary()
     .keyCodec(StringCodec.INSTANCE)
     .valueCodec(PrimitiveCodecs.DOUBLE)
     .build();
@@ -200,7 +168,8 @@ RogueMap<String, Double> mixedMap = RogueMap.<String, Double>offHeap()
 
 ```java
 // 对象类型
-RogueMap<Long, Long> longMap = RogueMap.<String, YourObject>offHeap()
+RogueMap<String, YourObject> objectMap = RogueMap.<String, YourObject>mmap()
+                .temporary()
                 .keyCodec(StringCodec.INSTANCE)
                 .valueCodec(KryoObjectCodec.create(YourObject.class))
                 .build();
@@ -212,21 +181,24 @@ RogueMap 提供了多种索引策略，适用于不同场景：
 
 ```java
 // 场景1: 高并发读写，推荐分段索引（默认）
-RogueMap<String, String> concurrentMap = RogueMap.<String, String>offHeap()
+RogueMap<String, String> concurrentMap = RogueMap.<String, String>mmap()
+    .temporary()
     .keyCodec(StringCodec.INSTANCE)
     .valueCodec(StringCodec.INSTANCE)
     .segmentedIndex(64)  // 64个段，减少锁竞争
     .build();
 
 // 场景2: 内存敏感，Long键，推荐原始索引
-RogueMap<Long, Long> memoryOptimized = RogueMap.<Long, Long>offHeap()
+RogueMap<Long, Long> memoryOptimized = RogueMap.<Long, Long>mmap()
+    .temporary()
     .keyCodec(PrimitiveCodecs.LONG)
     .valueCodec(PrimitiveCodecs.LONG)
     .primitiveIndex()  // 节省81%内存
     .build();
 
 // 场景3: 简单场景，推荐基础索引
-RogueMap<String, Integer> simpleMap = RogueMap.<String, Integer>offHeap()
+RogueMap<String, Integer> simpleMap = RogueMap.<String, Integer>mmap()
+    .temporary()
     .keyCodec(StringCodec.INSTANCE)
     .valueCodec(PrimitiveCodecs.INTEGER)
     .basicIndex()
@@ -234,25 +206,6 @@ RogueMap<String, Integer> simpleMap = RogueMap.<String, Integer>offHeap()
 ```
 
 ### 配置选项
-
-#### OffHeap 模式配置
-
-```java
-RogueMap<K, V> map = RogueMap.<K, V>offHeap()
-    // 必需配置
-    .keyCodec(keyCodec)           // 键的编解码器
-    .valueCodec(valueCodec)       // 值的编解码器
-
-    // 可选配置
-    .maxMemory(1024 * 1024 * 1024) // 最大内存 (默认 1GB)
-        
-    // 以下三种配置一种即可，或者不配置
-    .basicIndex()                 // 使用基础索引
-    .segmentedIndex(64)           // 使用分段索引 (默认)
-    .primitiveIndex()             // 使用原始索引（仅Long/Integer键）
-        
-    .build();
-```
 
 #### Mmap 临时文件模式配置
 
@@ -305,7 +258,6 @@ RogueMap<K, V> map = RogueMap.<K, V>mmap()
 | **HashMap** | 1,535ms | **158ms** | 651K ops/s | **6,329K ops/s** | 311 MB | ❌ |
 | **FastUtil** | **600ms** | **32ms** | **1,667K ops/s** | **31,250K ops/s** | 276 MB | ❌ |
 | **Caffeine** | 1,107ms | 2,298ms | 903K ops/s | 435K ops/s | 352 MB | ❌ |
-| **RogueMap OffHeap** | 1,924ms | 854ms | 520K ops/s | 1,171K ops/s | **48 MB** | ❌ |
 | **RogueMap Mmap 持久化** | **1,057ms** | **642ms** | **946K ops/s** | **1,558K ops/s** | **48 MB** | ✅ |
 | **RogueMap Mmap 临时** | 1,113ms | 704ms | 898K ops/s | 1,420K ops/s | **48 MB** | ❌ |
 | **MapDB OffHeap** | 8,259ms | 8,451ms | 121K ops/s | 118K ops/s | 11 MB | ❌ |
@@ -324,7 +276,7 @@ RogueMap<K, V> map = RogueMap.<K, V>mmap()
 
 **性能权衡的价值**：
 
-读取速度约为 HashMap 的 1/4，这是因为需要从堆外内存反序列化数据。但这个代价换来的是：
+读取速度约为 HashMap 的 1/4，这是因为需要从内存映射文件反序列化数据。但这个代价换来的是：
 - ✅ **持久化存储** - 数据不丢失
 - ✅ **无限容量** - 不受 JVM 堆限制
 - ✅ **零 GC 压力** - 84.7% 的内存节省
@@ -367,28 +319,26 @@ RogueMap API
    ↓
 Index Layer (HashIndex/SegmentedHashIndex/PrimitiveIndex)
    ↓
-Storage Engine (OffHeapStorage/MmapStorage)
+Storage Engine (MmapStorage)
    ↓
-Memory Allocator (SlabAllocator/MmapAllocator)
+Memory Allocator (MmapAllocator)
    ↓
 UnsafeOps (Java 8 Unsafe)
    ↓
-Off-Heap Memory / Memory-Mapped Files
+Memory-Mapped Files
 ```
 
 ### 核心模块
 
-- **RogueMap** - 主类，提供 OffHeapBuilder 和 MmapBuilder 两个构建器
+- **RogueMap** - 主类，提供 MmapBuilder 构建器
 - **index** - 索引层
   - `HashIndex` - 基础哈希索引，基于 ConcurrentHashMap
   - `SegmentedHashIndex` - 分段哈希索引，64 个段 + StampedLock 乐观锁
   - `LongPrimitiveIndex` - Long 键原始数组索引，节省 81% 内存
   - `IntPrimitiveIndex` - Integer 键原始数组索引
 - **storage** - 存储引擎
-  - `OffHeapStorage` - 堆外内存存储
   - `MmapStorage` - 内存映射文件存储
 - **memory** - 内存管理
-  - `SlabAllocator` - Slab 分配器，7 个大小类别（16B 到 16KB）
   - `MmapAllocator` - 内存映射文件分配器，支持超过 2GB 的大文件
   - `UnsafeOps` - 底层 Unsafe API 操作
 - **serialization** - 序列化层
@@ -397,13 +347,6 @@ Off-Heap Memory / Memory-Mapped Files
   - `KryoObjectCodec` - Kryo 对象序列化编解码器（可选）
 
 ### 内存管理机制
-
-#### SlabAllocator（堆外内存）
-
-- **分配策略**: 7 个 size class (16B, 64B, 256B, 1KB, 4KB, 16KB)
-- **块大小**: 1MB
-- **优化**: 空闲列表重用，负载因子自适应扩容
-- **内存节省**: 相比 HashMap 节省 87% 堆内存
 
 #### MmapAllocator（文件映射）
 
@@ -441,8 +384,8 @@ mvn clean compile
 mvn test
 
 # 运行特定测试
-mvn test -Dtest=OffHeapFunctionalTest
 mvn test -Dtest=MmapFunctionalTest
+mvn test -Dtest=ConcurrentSafetyTest
 ```
 
 ## 📝 系统要求
@@ -454,21 +397,16 @@ mvn test -Dtest=MmapFunctionalTest
 
 1. **Unsafe API 警告** - 本项目使用 `sun.misc.Unsafe` API，这是内部 API，可能在未来版本中被移除。以后将添加 Java 17/21 的替代实现。
 
-2. **内存管理** - 请确保正确关闭 RogueMap 实例以释放堆外内存：
+2. **资源管理** - 请确保正确关闭 RogueMap 实例以释放资源：
    ```java
    try (RogueMap<K, V> map = ...) {
        // 使用 map
    } // 自动关闭，释放资源
    ```
 
-3. **内存限制** - 堆外内存受 `-XX:MaxDirectMemorySize` JVM 参数限制，建议根据实际需求设置：
-   ```bash
-   java -XX:MaxDirectMemorySize=2g -jar your-app.jar
-   ```
+3. **文件大小** - Mmap 模式的 `allocateSize()` 会立即占用磁盘空间，请根据实际需求设置
 
-4. **文件大小** - Mmap 模式的 `allocateSize()` 会立即占用磁盘空间，请根据实际需求设置
-
-5. **并发安全** - RogueMap 是线程安全的，支持高并发读写
+4. **并发安全** - RogueMap 是线程安全的，支持高并发读写
 
 ## 🤝 贡献
 
