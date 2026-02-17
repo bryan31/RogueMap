@@ -23,36 +23,15 @@ import static org.junit.jupiter.api.Assertions.*;
 public class ConcurrentSameKeyTest {
 
     /**
-     * 测试1: OffHeap 模式 - 多线程更新同一个 key（核心测试）
+     * 测试1: Mmap临时文件模式 - 多线程更新同一个 key（核心测试）
      * <p>
      * 在修复前，此测试应该会出现 KryoBufferUnderflowException 错误
      * 在修复后，此测试应该通过，没有任何错误
      * </p>
      */
     @Test
-    public void testOffHeapConcurrentUpdateSameKey() throws Exception {
-        System.out.println("\n=== 测试 OffHeap 模式：多线程更新同一个 key ===");
-
-        try (RogueMap<Long, TestValueObject> map = RogueMap.<Long, TestValueObject>offHeap()
-                .keyCodec(PrimitiveCodecs.LONG)
-                .valueCodec(KryoObjectCodec.create(TestValueObject.class))
-                .primitiveIndex()
-                .build()) {
-
-            testConcurrentUpdateSameKey(map, "OffHeap");
-        }
-    }
-
-    /**
-     * 测试2: MmapTemp 模式 - 多线程更新同一个 key
-     * <p>
-     * MmapTemp 模式使用线性分配，不会立即重用内存，所以即使有竞态条件，
-     * 也不会触发 BufferUnderflow 错误（但问题依然存在）
-     * </p>
-     */
-    @Test
     public void testMmapTempConcurrentUpdateSameKey() throws Exception {
-        System.out.println("\n=== 测试 MmapTemp 模式：多线程更新同一个 key ===");
+        System.out.println("\n=== 测试 Mmap临时文件模式：多线程更新同一个 key ===");
 
         try (RogueMap<Long, TestValueObject> map = RogueMap.<Long, TestValueObject>mmap()
                 .temporary()
@@ -66,13 +45,14 @@ public class ConcurrentSameKeyTest {
     }
 
     /**
-     * 测试3: 分段索引模式 - 多线程更新同一个 key
+     * 测试2: 分段索引模式 - 多线程更新同一个 key
      */
     @Test
     public void testSegmentedIndexConcurrentUpdateSameKey() throws Exception {
         System.out.println("\n=== 测试分段索引模式：多线程更新同一个 key ===");
 
-        try (RogueMap<Long, TestValueObject> map = RogueMap.<Long, TestValueObject>offHeap()
+        try (RogueMap<Long, TestValueObject> map = RogueMap.<Long, TestValueObject>mmap()
+                .temporary()
                 .keyCodec(PrimitiveCodecs.LONG)
                 .valueCodec(KryoObjectCodec.create(TestValueObject.class))
                 .segmentedIndex(64)
@@ -83,13 +63,14 @@ public class ConcurrentSameKeyTest {
     }
 
     /**
-     * 测试4: 极端压力测试 - 更多线程，更多迭代
+     * 测试3: 极端压力测试 - 更多线程，更多迭代
      */
     @Test
-    public void testOffHeapExtremeConcurrentUpdateSameKey() throws Exception {
+    public void testExtremeConcurrentUpdateSameKey() throws Exception {
         System.out.println("\n=== 极端压力测试：200 线程 × 50000 次迭代 ===");
 
-        try (RogueMap<Long, TestValueObject> map = RogueMap.<Long, TestValueObject>offHeap()
+        try (RogueMap<Long, TestValueObject> map = RogueMap.<Long, TestValueObject>mmap()
+                .temporary()
                 .keyCodec(PrimitiveCodecs.LONG)
                 .valueCodec(KryoObjectCodec.create(TestValueObject.class))
                 .primitiveIndex()

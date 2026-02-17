@@ -41,24 +41,7 @@ public class ConcurrentSafetyTest {
     }
 
     /**
-     * 测试1: OffHeap模式 - 并发读写测试
-     */
-    @Test
-    public void testOffHeapConcurrentReadWrite() throws Exception {
-        System.out.println("\n=== 测试 OffHeap 模式并发读写 ===");
-
-        try (RogueMap<Long, TestValueObject> map = RogueMap.<Long, TestValueObject>offHeap()
-                .keyCodec(PrimitiveCodecs.LONG)
-                .valueCodec(KryoObjectCodec.create(TestValueObject.class))
-                .primitiveIndex()
-                .build()) {
-
-            testConcurrentReadWrite(map, "OffHeap");
-        }
-    }
-
-    /**
-     * 测试2: Mmap临时文件模式 - 并发读写测试
+     * 测试1: Mmap临时文件模式 - 并发读写测试
      */
     @Test
     public void testMmapTemporaryConcurrentReadWrite() throws Exception {
@@ -76,7 +59,7 @@ public class ConcurrentSafetyTest {
     }
 
     /**
-     * 测试3: Mmap持久化模式 - 并发读写测试
+     * 测试2: Mmap持久化模式 - 并发读写测试
      */
     @Test
     public void testMmapPersistentConcurrentReadWrite() throws Exception {
@@ -97,20 +80,21 @@ public class ConcurrentSafetyTest {
     }
 
     /**
-     * 测试4: 读写分离并发测试（多读少写场景）
+     * 测试3: 读写分离并发测试（多读少写场景）
      */
     @Test
     public void testConcurrentReadHeavy() throws Exception {
         System.out.println("\n=== 测试读多写少并发场景 ===");
 
-        try (RogueMap<Long, TestValueObject> map = RogueMap.<Long, TestValueObject>offHeap()
+        try (RogueMap<Long, TestValueObject> map = RogueMap.<Long, TestValueObject>mmap()
+                .temporary()
                 .keyCodec(PrimitiveCodecs.LONG)
                 .valueCodec(KryoObjectCodec.create(TestValueObject.class))
                 .primitiveIndex()
                 .build()) {
 
             // 先预填充一些数据（key从1开始，因为LongPrimitiveIndex不支持0）
-            System.out.println("预填充 1000000 条数据...");
+            System.out.println("预填充 10000 条数据...");
             for (int i = 1; i <= 10000; i++) {
                 map.put((long) i, createTestValue(i, new Random(i)));
             }
@@ -121,7 +105,7 @@ public class ConcurrentSafetyTest {
     }
 
     /**
-     * 测试5: 不同key的并发更新测试（避免同一key竞态条件）
+     * 测试4: 不同key的并发更新测试（避免同一key竞态条件）
      *
      * 注意：当前版本的 RogueMap 在多个线程同时更新同一个 key 时存在竞态条件，
      * 会导致 Buffer Underflow 错误。这是因为 put 方法中读取旧值和释放内存不是原子操作。
@@ -132,7 +116,8 @@ public class ConcurrentSafetyTest {
     public void testConcurrentUpdateDifferentKeys() throws Exception {
         System.out.println("\n=== 测试不同Key的并发更新 ===");
 
-        try (RogueMap<Long, TestValueObject> map = RogueMap.<Long, TestValueObject>offHeap()
+        try (RogueMap<Long, TestValueObject> map = RogueMap.<Long, TestValueObject>mmap()
+                .temporary()
                 .keyCodec(PrimitiveCodecs.LONG)
                 .valueCodec(KryoObjectCodec.create(TestValueObject.class))
                 .segmentedIndex(64)
@@ -190,13 +175,14 @@ public class ConcurrentSafetyTest {
     }
 
     /**
-     * 测试6: 并发删除测试
+     * 测试5: 并发删除测试
      */
     @Test
     public void testConcurrentDelete() throws Exception {
         System.out.println("\n=== 测试并发删除操作 ===");
 
-        try (RogueMap<Long, TestValueObject> map = RogueMap.<Long, TestValueObject>offHeap()
+        try (RogueMap<Long, TestValueObject> map = RogueMap.<Long, TestValueObject>mmap()
+                .temporary()
                 .keyCodec(PrimitiveCodecs.LONG)
                 .valueCodec(KryoObjectCodec.create(TestValueObject.class))
                 .primitiveIndex()

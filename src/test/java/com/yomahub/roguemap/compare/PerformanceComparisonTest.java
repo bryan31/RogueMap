@@ -69,9 +69,6 @@ public class PerformanceComparisonTest {
         results.put("FastUtil模式", testFastUtilMode());
         forceGC();
 
-        results.put("RogueMap.OffHeap模式", testOffHeapMode());
-        forceGC();
-
         results.put("RogueMap.Mmap临时文件模式", testMmapTemporaryMode());
         forceGC();
 
@@ -146,72 +143,6 @@ public class PerformanceComparisonTest {
         forceGC();
 
         return new TestResult("HashMap模式", heapUsed, writeTimeMs, readTimeMs);
-    }
-
-    /**
-     * 测试OffHeap模式
-     */
-    private static TestResult testOffHeapMode() throws IOException {
-        System.out.println("测试 RogueMap.OffHeap 模式...");
-
-        // 清理内存，建立基准
-        forceGC();
-        long baselineMemory = getCurrentHeapMemory();
-
-        RogueMap<Long, TestValueObject> map = null;
-        long writeTimeMs = 0;
-        long readTimeMs = 0;
-        long heapUsed = 0;
-
-        try {
-            // 创建OffHeap RogueMap
-            map = RogueMap.<Long, TestValueObject>offHeap()
-                    .keyCodec(PrimitiveCodecs.LONG)
-                    .valueCodec(KryoObjectCodec.create(TestValueObject.class))
-                    .primitiveIndex()
-                    .build();
-
-            Random random = new Random(RANDOM_SEED);
-
-            // 写入测试
-            long writeStartTime = System.nanoTime();
-            for (int i = 0; i < DATASET_SIZE; i++) {
-                long key = i + 1L;
-                TestValueObject value = createTestValue(i, random);
-                map.put(key, value);
-            }
-            long writeEndTime = System.nanoTime();
-            writeTimeMs = (writeEndTime - writeStartTime) / 1_000_000;
-
-            // 准备随机读取的key列表
-            long[] randomKeys = generateRandomKeys(DATASET_SIZE, RANDOM_SEED);
-
-            // 随机读取测试
-            long readStartTime = System.nanoTime();
-            for (int i = 0; i < DATASET_SIZE; i++) {
-                long key = randomKeys[i];
-                map.get(key);
-            }
-            long readEndTime = System.nanoTime();
-            readTimeMs = (readEndTime - readStartTime) / 1_000_000;
-
-            // 强制GC，清理临时对象
-            forceGC();
-            long usedMemory = getCurrentHeapMemory();
-            heapUsed = usedMemory - baselineMemory;
-
-            System.out.printf("  OffHeap Map 包含 %d 个条目%n", map.size());
-            System.out.printf("  写入耗时: %d ms%n", writeTimeMs);
-            System.out.printf("  读取耗时: %d ms%n", readTimeMs);
-            System.out.printf("  堆内存占用: %.2f MB%n", heapUsed / 1024.0 / 1024.0);
-        } finally {
-            if (map != null) {
-                map.close();
-            }
-            forceGC();
-        }
-
-        return new TestResult("RogueMap.OffHeap模式", heapUsed, writeTimeMs, readTimeMs);
     }
 
     /**
@@ -775,7 +706,6 @@ public class PerformanceComparisonTest {
             "HashMap模式",
             "Caffeine缓存模式",
             "FastUtil模式",
-            "RogueMap.OffHeap模式",
             "RogueMap.Mmap临时文件模式",
             "RogueMap.Mmap持久化模式",
             "MapDB.OffHeap模式",
@@ -830,24 +760,17 @@ public class PerformanceComparisonTest {
         // 3. RogueMap vs MapDB 对比
         System.out.println("【RogueMap vs MapDB 对比】");
 
-        TestResult rogueOffHeap = results.get("RogueMap.OffHeap模式");
-        TestResult mapdbOffHeap = results.get("MapDB.OffHeap模式");
-        if (rogueOffHeap != null && mapdbOffHeap != null) {
-            System.out.println("\n1. OffHeap 模式对比：");
-            compareResults(rogueOffHeap, mapdbOffHeap);
-        }
-
         TestResult rogueMmapTemp = results.get("RogueMap.Mmap临时文件模式");
         TestResult mapdbTemp = results.get("MapDB.临时文件模式");
         if (rogueMmapTemp != null && mapdbTemp != null) {
-            System.out.println("\n2. 临时文件模式对比：");
+            System.out.println("\n1. 临时文件模式对比：");
             compareResults(rogueMmapTemp, mapdbTemp);
         }
 
         TestResult rogueMmapPersist = results.get("RogueMap.Mmap持久化模式");
         TestResult mapdbPersist = results.get("MapDB.持久化模式");
         if (rogueMmapPersist != null && mapdbPersist != null) {
-            System.out.println("\n3. 持久化模式对比：");
+            System.out.println("\n2. 持久化模式对比：");
             compareResults(rogueMmapPersist, mapdbPersist);
         }
 

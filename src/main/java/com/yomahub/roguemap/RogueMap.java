@@ -9,11 +9,9 @@ import com.yomahub.roguemap.index.LongPrimitiveIndex;
 import com.yomahub.roguemap.index.SegmentedHashIndex;
 import com.yomahub.roguemap.memory.Allocator;
 import com.yomahub.roguemap.memory.MmapAllocator;
-import com.yomahub.roguemap.memory.SlabAllocator;
 import com.yomahub.roguemap.serialization.Codec;
 import com.yomahub.roguemap.serialization.PrimitiveCodecs;
 import com.yomahub.roguemap.storage.MmapStorage;
-import com.yomahub.roguemap.storage.OffHeapStorage;
 import com.yomahub.roguemap.storage.StorageEngine;
 
 /**
@@ -259,17 +257,6 @@ public class RogueMap<K, V> implements AutoCloseable {
         }
         // 未知索引类型，返回默认值
         return 0;
-    }
-
-    /**
-     * 创建堆外内存模式的构建器
-     *
-     * @param <K> 键类型
-     * @param <V> 值类型
-     * @return OffHeap 构建器
-     */
-    public static <K, V> OffHeapBuilder<K, V> offHeap() {
-        return new OffHeapBuilder<>();
     }
 
     /**
@@ -530,50 +517,6 @@ public class RogueMap<K, V> implements AutoCloseable {
                     index = createNewIndex(keyCodec);
                 }
             }
-
-            return new RogueMap<>(index, storage, keyCodec, valueCodec, allocator);
-        }
-    }
-
-    /**
-     * 堆外内存模式的构建器
-     *
-     * @param <K> 键类型
-     * @param <V> 值类型
-     */
-    public static class OffHeapBuilder<K, V> extends BaseBuilder<K, V, OffHeapBuilder<K, V>> {
-        private long maxMemory = 1024L * 1024 * 1024; // 默认 1GB
-
-        private OffHeapBuilder() {
-        }
-
-        /**
-         * 设置最大内存大小
-         *
-         * @param maxMemory 最大内存（字节）
-         * @return 此构建器
-         */
-        public OffHeapBuilder<K, V> maxMemory(long maxMemory) {
-            if (maxMemory <= 0) {
-                throw new IllegalArgumentException("maxMemory 必须为正数");
-            }
-            this.maxMemory = maxMemory;
-            return this;
-        }
-
-        @Override
-        public RogueMap<K, V> build() {
-            if (keyCodec == null) {
-                throw new IllegalStateException("必须设置键编解码器");
-            }
-            if (valueCodec == null) {
-                throw new IllegalStateException("必须设置值编解码器");
-            }
-
-            // 堆外内存模式
-            Allocator allocator = new SlabAllocator(maxMemory);
-            StorageEngine storage = new OffHeapStorage(allocator);
-            Index<K> index = createNewIndex(keyCodec);
 
             return new RogueMap<>(index, storage, keyCodec, valueCodec, allocator);
         }
