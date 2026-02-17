@@ -10,13 +10,14 @@ import com.yomahub.roguemap.memory.UnsafeOps;
  * 文件头布局（4KB）：
  * - Magic Number (4 bytes): 0x524D4150 "RMAP"
  * - Version (4 bytes): 1
+ * - Data Type (4 bytes): 数据结构类型
  * - Index Type (4 bytes): 0=HashIndex, 1=SegmentedHashIndex
  * - Entry Count (4 bytes)
  * - Current Offset (8 bytes)
  * - Index Offset (8 bytes)
  * - Index Size (8 bytes)
  * - Is Temporary (4 bytes): 0=persistent, 1=temporary
- * - Reserved (3956 bytes)
+ * - Reserved (3952 bytes)
  */
 public class MmapFileHeader {
 
@@ -24,8 +25,16 @@ public class MmapFileHeader {
     public static final int VERSION = 1;
     public static final int HEADER_SIZE = 4096;  // 4KB
 
+    // Data Type 常量
+    public static final int DATA_TYPE_MAP = 0;            // RogueMap
+    public static final int DATA_TYPE_LIST = 1;           // RogueList
+    public static final int DATA_TYPE_SET = 2;            // RogueSet
+    public static final int DATA_TYPE_QUEUE_LINKED = 3;   // RogueQueue Linked模式
+    public static final int DATA_TYPE_QUEUE_CIRCULAR = 4; // RogueQueue Circular模式
+
     private int magicNumber;
     private int version;
+    private int dataType;      // 数据结构类型
     private int indexType;      // 0=HashIndex, 1=SegmentedHashIndex
     private int entryCount;     // 条目数量
     private long currentOffset; // 当前分配偏移量
@@ -46,12 +55,13 @@ public class MmapFileHeader {
 
         header.magicNumber = UnsafeOps.getInt(address);
         header.version = UnsafeOps.getInt(address + 4);
-        header.indexType = UnsafeOps.getInt(address + 8);
-        header.entryCount = UnsafeOps.getInt(address + 12);
-        header.currentOffset = UnsafeOps.getLong(address + 16);
-        header.indexOffset = UnsafeOps.getLong(address + 24);
-        header.indexSize = UnsafeOps.getLong(address + 32);
-        header.isTemporary = UnsafeOps.getInt(address + 40);
+        header.dataType = UnsafeOps.getInt(address + 8);
+        header.indexType = UnsafeOps.getInt(address + 12);
+        header.entryCount = UnsafeOps.getInt(address + 16);
+        header.currentOffset = UnsafeOps.getLong(address + 20);
+        header.indexOffset = UnsafeOps.getLong(address + 28);
+        header.indexSize = UnsafeOps.getLong(address + 36);
+        header.isTemporary = UnsafeOps.getInt(address + 44);
 
         return header;
     }
@@ -62,15 +72,16 @@ public class MmapFileHeader {
     public void write(long address) {
         UnsafeOps.putInt(address, magicNumber);
         UnsafeOps.putInt(address + 4, version);
-        UnsafeOps.putInt(address + 8, indexType);
-        UnsafeOps.putInt(address + 12, entryCount);
-        UnsafeOps.putLong(address + 16, currentOffset);
-        UnsafeOps.putLong(address + 24, indexOffset);
-        UnsafeOps.putLong(address + 32, indexSize);
-        UnsafeOps.putInt(address + 40, isTemporary);
+        UnsafeOps.putInt(address + 8, dataType);
+        UnsafeOps.putInt(address + 12, indexType);
+        UnsafeOps.putInt(address + 16, entryCount);
+        UnsafeOps.putLong(address + 20, currentOffset);
+        UnsafeOps.putLong(address + 28, indexOffset);
+        UnsafeOps.putLong(address + 36, indexSize);
+        UnsafeOps.putInt(address + 44, isTemporary);
 
         // 清空保留区域（确保干净的头部）
-        UnsafeOps.setMemory(address + 44, HEADER_SIZE - 44, (byte) 0);
+        UnsafeOps.setMemory(address + 48, HEADER_SIZE - 48, (byte) 0);
     }
 
     /**
@@ -98,6 +109,14 @@ public class MmapFileHeader {
 
     public void setVersion(int version) {
         this.version = version;
+    }
+
+    public int getDataType() {
+        return dataType;
+    }
+
+    public void setDataType(int dataType) {
+        this.dataType = dataType;
     }
 
     public int getIndexType() {
@@ -157,6 +176,7 @@ public class MmapFileHeader {
         return "MmapFileHeader{" +
                 "magicNumber=0x" + Integer.toHexString(magicNumber) +
                 ", version=" + version +
+                ", dataType=" + dataType +
                 ", indexType=" + indexType +
                 ", entryCount=" + entryCount +
                 ", currentOffset=" + currentOffset +

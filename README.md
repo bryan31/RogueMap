@@ -7,17 +7,17 @@
 
 [![License](https://img.shields.io/badge/license-Apache%202-blue.svg)](LICENSE)
 [![Java](https://img.shields.io/badge/Java-8%2B-orange.svg)](https://www.oracle.com/java/)
-[![Version](https://img.shields.io/badge/version-1.0.0--BETA1-green.svg)](https://github.com/bryan31/RogueMap)
+[![Version](https://img.shields.io/badge/version-1.0.0--BETA2-green.svg)](https://github.com/bryan31/RogueMap)
 
 </div>
 
-**RogueMap** 是一个高性能的嵌入式键值存储引擎，突破 HashMap 的内存墙，提供内存映射文件持久化存储能力。
+**RogueMap** 是一个高性能的嵌入式存储引擎库，突破 JVM 内存墙，基于内存映射文件提供四种数据结构：**RogueMap**（键值存储）、**RogueList**（双向链表）、**RogueSet**（并发集合）、**RogueQueue**（FIFO 队列）。
 
 ## 🎯 为什么选择 RogueMap？
 
-### HashMap 的困境
+### 传统数据结构的困境
 
-在处理大规模数据时，传统的 HashMap 面临诸多限制：
+在处理大规模数据时，传统的 Java 集合面临诸多限制：
 
 - ❌ **内存瓶颈** - 所有数据必须存储在堆内存，受 JVM 堆大小限制
 - ❌ **GC 压力** - 百万级对象导致 Full GC 频繁，影响应用稳定性
@@ -27,7 +27,7 @@
 
 ### RogueMap 的突破
 
-RogueMap 将数据存储在 **内存映射文件** 中，让你享受 HashMap 的简单 API，同时获得超越其限制的能力：
+RogueMap 将数据存储在 **内存映射文件** 中，让你享受简单 API，同时获得超越 JVM 限制的能力：
 
 - ✅ **无限容量** - 突破 JVM 堆限制，轻松处理 100GB+ 数据集
 - ✅ **零 GC 压力** - 堆内存占用减少 **84.7%**，告别 Full GC 噩梦
@@ -38,7 +38,7 @@ RogueMap 将数据存储在 **内存映射文件** 中，让你享受 HashMap �
 
 ### 核心优势
 
-| 特性 | HashMap | RogueMap |
+| 特性 | 传统集合 | RogueMap |
 |------|---------|----------|
 | **数据容量** | 受限于堆大小（通常 < 10GB） | **无限制**，可达 TB 级 |
 | **堆内存占用** | 100% | **仅 15.3%** |
@@ -65,12 +65,12 @@ RogueMap 将数据存储在 **内存映射文件** 中，让你享受 HashMap �
 
 ## ✨ 特性
 
+- ✅ **四种数据结构** - RogueMap（键值）、RogueList（链表）、RogueSet（集合）、RogueQueue（队列）
 - ✅ **多种存储模式** - 支持 内存映射文件持久化、内存映射临时文件 两种模式
 - ✅ **持久化支持** - Mmap 模式支持数据持久化到磁盘，支持自动恢复
 - ✅ **临时文件模式** - 支持自动清理的临时文件存储
 - ✅ **零拷贝序列化** - 原始类型直接内存布局，无序列化开销
 - ✅ **高并发支持** - 分段锁设计（64 个段），StampedLock 乐观锁优化
-- ✅ **智能内存分配** - Slab Allocator 减少内存碎片
 - ✅ **多种索引结构** - 支持 HashIndex、SegmentedHashIndex、LongPrimitiveIndex、IntPrimitiveIndex
 - ✅ **类型安全** - 泛型支持，编译时类型检查
 - ✅ **零依赖** - 核心库无第三方依赖
@@ -87,7 +87,7 @@ RogueMap 将数据存储在 **内存映射文件** 中，让你享受 HashMap �
 </dependency>
 ```
 
-### 基本使用
+### RogueMap - 键值存储
 
 #### Mmap 临时文件模式
 
@@ -128,6 +128,148 @@ long score = map2.get("alice");  // 100L（从磁盘恢复）
 map2.close();
 ```
 
+#### 索引选择
+
+```java
+// 场景1: 高并发读写，推荐分段索引（默认）
+RogueMap<String, String> concurrentMap = RogueMap.<String, String>mmap()
+    .temporary()
+    .keyCodec(StringCodec.INSTANCE)
+    .valueCodec(StringCodec.INSTANCE)
+    .segmentedIndex(64)  // 64个段，减少锁竞争
+    .build();
+
+// 场景2: 内存敏感，Long键，推荐原始索引
+RogueMap<Long, Long> memoryOptimized = RogueMap.<Long, Long>mmap()
+    .temporary()
+    .keyCodec(PrimitiveCodecs.LONG)
+    .valueCodec(PrimitiveCodecs.LONG)
+    .primitiveIndex()  // 节省81%内存
+    .build();
+
+// 场景3: 简单场景，推荐基础索引
+RogueMap<String, Integer> simpleMap = RogueMap.<String, Integer>mmap()
+    .temporary()
+    .keyCodec(StringCodec.INSTANCE)
+    .valueCodec(PrimitiveCodecs.INTEGER)
+    .basicIndex()
+    .build();
+```
+
+### RogueList - 双向链表
+
+RogueList 是基于内存映射文件的高性能双向链表，支持 O(1) 随机访问：
+
+```java
+// 临时文件模式
+RogueList<String> list = RogueList.<String>mmap()
+    .temporary()
+    .elementCodec(StringCodec.INSTANCE)
+    .build();
+
+// 头部/尾部操作
+list.addFirst("hello");
+list.addLast("world");
+
+String first = list.getFirst();     // "hello"
+String last = list.getLast();       // "world"
+
+// O(1) 随机访问
+String element = list.get(0);       // "hello"
+
+// 移除操作
+String removed = list.removeFirst(); // "hello"
+String removed2 = list.removeLast(); // "world"
+
+// 持久化模式
+RogueList<Long> persistentList = RogueList.<Long>mmap()
+    .persistent("data/mylist.db")
+    .elementCodec(PrimitiveCodecs.LONG)
+    .allocateSize(256 * 1024 * 1024L)
+    .build();
+
+// 迭代器支持
+for (String s : list) {
+    System.out.println(s);
+}
+
+// ListIterator 双向遍历
+java.util.ListIterator<String> it = list.listIterator();
+while (it.hasNext()) {
+    System.out.println(it.next());
+}
+while (it.hasPrevious()) {
+    System.out.println(it.previous());
+}
+```
+
+### RogueSet - 并发集合
+
+RogueSet 是基于内存映射文件的高性能并发集合，采用 64 段分段锁设计：
+
+```java
+// 临时文件模式
+RogueSet<String> set = RogueSet.<String>mmap()
+    .temporary()
+    .elementCodec(StringCodec.INSTANCE)
+    .build();
+
+// 基本操作
+set.add("apple");   // true
+set.add("apple");   // false（已存在）
+set.contains("apple"); // true
+set.remove("apple");   // true
+
+// 持久化模式
+RogueSet<Long> persistentSet = RogueSet.<Long>mmap()
+    .persistent("data/myset.db")
+    .elementCodec(PrimitiveCodecs.LONG)
+    .segmentCount(64)  // 64段分段锁
+    .build();
+
+// 迭代器支持
+for (String s : set) {
+    System.out.println(s);
+}
+
+// 清空
+set.clear();
+```
+
+### RogueQueue - FIFO 队列
+
+RogueQueue 支持两种模式：链表模式（无界）和环形缓冲区模式（有界）：
+
+```java
+// 链表模式（无界队列）
+RogueQueue<String> linkedQueue = RogueQueue.<String>mmap()
+    .temporary()
+    .linked()
+    .elementCodec(StringCodec.INSTANCE)
+    .build();
+
+linkedQueue.offer("task1");
+linkedQueue.offer("task2");
+String task = linkedQueue.poll();   // "task1"
+String peek = linkedQueue.peek();   // "task2"
+
+// 环形缓冲区模式（有界队列）
+RogueQueue<Long> circularQueue = RogueQueue.<Long>mmap()
+    .persistent("data/myqueue.db")
+    .circular(1024, 64)  // 容量1024，最大元素64字节
+    .elementCodec(PrimitiveCodecs.LONG)
+    .build();
+
+circularQueue.offer(1L);
+circularQueue.offer(2L);
+
+if (circularQueue.isFull()) {
+    System.out.println("队列已满");
+}
+
+Long value = circularQueue.poll();  // 1L
+```
+
 ### 支持的数据类型
 
 RogueMap 提供了零拷贝的原始类型编解码器：
@@ -164,86 +306,14 @@ RogueMap<String, Double> mixedMap = RogueMap.<String, Double>mmap()
 
 **支持的原始类型**：`Long`, `Integer`, `Double`, `Float`, `Short`, `Byte`, `Boolean`
 
-如果是对象类型，RogueMap也提供了对象的编码解析器：
+如果是对象类型，RogueMap 也提供了对象的编码解析器：
 
 ```java
 // 对象类型
 RogueMap<String, YourObject> objectMap = RogueMap.<String, YourObject>mmap()
-                .temporary()
-                .keyCodec(StringCodec.INSTANCE)
-                .valueCodec(KryoObjectCodec.create(YourObject.class))
-                .build();
-```
-
-### 索引选择
-
-RogueMap 提供了多种索引策略，适用于不同场景：
-
-```java
-// 场景1: 高并发读写，推荐分段索引（默认）
-RogueMap<String, String> concurrentMap = RogueMap.<String, String>mmap()
     .temporary()
     .keyCodec(StringCodec.INSTANCE)
-    .valueCodec(StringCodec.INSTANCE)
-    .segmentedIndex(64)  // 64个段，减少锁竞争
-    .build();
-
-// 场景2: 内存敏感，Long键，推荐原始索引
-RogueMap<Long, Long> memoryOptimized = RogueMap.<Long, Long>mmap()
-    .temporary()
-    .keyCodec(PrimitiveCodecs.LONG)
-    .valueCodec(PrimitiveCodecs.LONG)
-    .primitiveIndex()  // 节省81%内存
-    .build();
-
-// 场景3: 简单场景，推荐基础索引
-RogueMap<String, Integer> simpleMap = RogueMap.<String, Integer>mmap()
-    .temporary()
-    .keyCodec(StringCodec.INSTANCE)
-    .valueCodec(PrimitiveCodecs.INTEGER)
-    .basicIndex()
-    .build();
-```
-
-### 配置选项
-
-#### Mmap 临时文件模式配置
-
-```java
-RogueMap<K, V> map = RogueMap.<K, V>mmap()
-    // 必须配置
-    .temporary()                  // 临时文件模式
-    .keyCodec(keyCodec)           // 键的编解码器
-    .valueCodec(valueCodec)       // 值的编解码器
-
-    // 可选配置
-    .allocateSize(10L * 1024 * 1024 * 1024) // 预分配大小 (默认 10GB)
-        
-    // 以下三种配置一种即可，或者不配置
-    .basicIndex()                 // 使用基础索引
-    .segmentedIndex(64)           // 使用分段索引 (默认)
-    .primitiveIndex()             // 使用原始索引（仅Long/Integer键）
-        
-    .build();
-```
-
-#### Mmap 文件持久化模式配置
-
-```java
-RogueMap<K, V> map = RogueMap.<K, V>mmap()
-    // 必需配置
-    .persistent("data.db")        // 持久化文件路径
-    .keyCodec(keyCodec)           // 键的编解码器
-    .valueCodec(valueCodec)       // 值的编解码器
-
-    // 可选配置
-    .allocateSize(10L * 1024 * 1024 * 1024) // 预分配大小 (默认 10GB)
-
-    // 以下三种配置一种即可，或者不配置
-    .basicIndex()                 // 使用基础索引
-    .segmentedIndex(64)           // 使用分段索引 (默认)
-    .primitiveIndex()             // 使用原始索引（仅Long/Integer键）
-        
+    .valueCodec(KryoObjectCodec.create(YourObject.class))
     .build();
 ```
 
@@ -310,14 +380,24 @@ mvn test -Dtest=RogueMapVsMapDBComparisonTest
 
 # 运行所有性能测试
 mvn test -Dtest=*ComparisonTest
+
+# 运行 List/Set/Queue 测试
+mvn test -Dtest=ListFunctionalTest
+mvn test -Dtest=SetFunctionalTest
+mvn test -Dtest=QueueFunctionalTest
+
+# 运行并发测试
+mvn test -Dtest=ListConcurrentTest
+mvn test -Dtest=SetConcurrentTest
+mvn test -Dtest=QueueConcurrentTest
 ```
 
 ## 🏗️ 架构设计
 
 ```
-RogueMap API
+API Layer (RogueMap, RogueList, RogueSet, RogueQueue)
    ↓
-Index Layer (HashIndex/SegmentedHashIndex/PrimitiveIndex)
+Index Layer (HashIndex/SegmentedHashIndex/ListIndex/SetIndex)
    ↓
 Storage Engine (MmapStorage)
    ↓
@@ -330,14 +410,27 @@ Memory-Mapped Files
 
 ### 核心模块
 
-- **RogueMap** - 主类，提供 MmapBuilder 构建器
-- **index** - 索引层
+- **RogueMap** - 键值存储，提供 MmapBuilder 构建器
+- **RogueList** - 双向链表，O(1) 随机访问，支持 ListIterator
+- **RogueSet** - 并发集合，64 段分段锁，StampedLock 乐观读
+- **RogueQueue** - FIFO 队列，支持链表模式（无界）和环形缓冲区模式（有界）
+- **index** - Map 索引层
   - `HashIndex` - 基础哈希索引，基于 ConcurrentHashMap
   - `SegmentedHashIndex` - 分段哈希索引，64 个段 + StampedLock 乐观锁
   - `LongPrimitiveIndex` - Long 键原始数组索引，节省 81% 内存
   - `IntPrimitiveIndex` - Integer 键原始数组索引
+- **list** - List 索引层
+  - `ListIndex` - 头尾指针 + 位置索引数组
+  - `RogueListIterator` - 双向迭代器
+- **set** - Set 索引层
+  - `SetIndex` - 分段哈希集合索引
+  - `SetIterator` - 迭代器实现
+- **queue** - Queue 存储层
+  - `LinkedQueueStorage` - 链表队列存储
+  - `CircularQueueStorage` - 环形缓冲区队列存储
 - **storage** - 存储引擎
   - `MmapStorage` - 内存映射文件存储
+  - `MmapFileHeader` - 文件头，支持多种数据类型
 - **memory** - 内存管理
   - `MmapAllocator` - 内存映射文件分配器，支持超过 2GB 的大文件
   - `UnsafeOps` - 底层 Unsafe API 操作
@@ -386,6 +479,9 @@ mvn test
 # 运行特定测试
 mvn test -Dtest=MmapFunctionalTest
 mvn test -Dtest=ConcurrentSafetyTest
+mvn test -Dtest=ListFunctionalTest
+mvn test -Dtest=SetFunctionalTest
+mvn test -Dtest=QueueFunctionalTest
 ```
 
 ## 📝 系统要求
@@ -397,16 +493,28 @@ mvn test -Dtest=ConcurrentSafetyTest
 
 1. **Unsafe API 警告** - 本项目使用 `sun.misc.Unsafe` API，这是内部 API，可能在未来版本中被移除。以后将添加 Java 17/21 的替代实现。
 
-2. **资源管理** - 请确保正确关闭 RogueMap 实例以释放资源：
+2. **资源管理** - 请确保正确关闭实例以释放资源：
    ```java
    try (RogueMap<K, V> map = ...) {
        // 使用 map
    } // 自动关闭，释放资源
+
+   try (RogueList<E> list = ...) {
+       // 使用 list
+   }
+
+   try (RogueSet<E> set = ...) {
+       // 使用 set
+   }
+
+   try (RogueQueue<E> queue = ...) {
+       // 使用 queue
+   }
    ```
 
 3. **文件大小** - Mmap 模式的 `allocateSize()` 会立即占用磁盘空间，请根据实际需求设置
 
-4. **并发安全** - RogueMap 是线程安全的，支持高并发读写
+4. **并发安全** - 所有数据结构都是线程安全的，支持高并发读写
 
 ## 🤝 贡献
 
@@ -421,4 +529,3 @@ mvn test -Dtest=ConcurrentSafetyTest
 本项目的设计灵感来自于：
 - [MapDB](https://github.com/jankotek/mapdb) - 优秀的嵌入式数据库
 - [Chronicle Map](https://github.com/OpenHFT/Chronicle-Map) - 高性能堆外 Map
-

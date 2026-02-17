@@ -233,6 +233,7 @@ public class RogueMap<K, V> implements AutoCloseable {
             new com.yomahub.roguemap.storage.MmapFileHeader();
         header.setMagicNumber(com.yomahub.roguemap.storage.MmapFileHeader.MAGIC_NUMBER);
         header.setVersion(com.yomahub.roguemap.storage.MmapFileHeader.VERSION);
+        header.setDataType(com.yomahub.roguemap.storage.MmapFileHeader.DATA_TYPE_MAP);
         header.setIndexType(getIndexType(index));
         header.setEntryCount(index.size());
         header.setCurrentOffset(currentDataOffset);
