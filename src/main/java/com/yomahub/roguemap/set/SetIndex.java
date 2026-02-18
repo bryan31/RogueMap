@@ -139,6 +139,23 @@ public class SetIndex<E> {
     }
 
     /**
+     * 遍历指定分段的元素（用于分段懒加载迭代器）
+     *
+     * @param segmentIdx 分段索引
+     * @param consumer   消费者
+     */
+    public void forSegment(int segmentIdx, SetEntryConsumer<E> consumer) {
+        segments[segmentIdx].forEach(consumer);
+    }
+
+    /**
+     * 获取分段数
+     */
+    public int getSegmentCount() {
+        return segments.length;
+    }
+
+    /**
      * 获取元素数量
      */
     public int size() {
@@ -264,11 +281,24 @@ public class SetIndex<E> {
         int totalEntries = UnsafeOps.getInt(currentAddr);
         currentAddr += 4;
 
+        // 边界检查：每条 entry 至少占 4(elementSize)+1(element)+8(offset)+4(size)=17B
+        int maxPossibleEntries = (totalSize - 8) / 17;
+        if (totalEntries < 0 || totalEntries > maxPossibleEntries) {
+            throw new IllegalStateException("反序列化数据损坏：totalEntries=" + totalEntries
+                    + " 超出合法范围 [0, " + maxPossibleEntries + "]");
+        }
+
         // 读取所有数据
         for (int i = 0; i < totalEntries; i++) {
             // 读取 element size
             int elementSize = UnsafeOps.getInt(currentAddr);
             currentAddr += 4;
+
+            // 边界检查：elementSize 不能为负或超过剩余空间
+            if (elementSize < 0 || elementSize > totalSize) {
+                throw new IllegalStateException("反序列化数据损坏：第 " + i
+                        + " 条 entry 的 elementSize=" + elementSize + " 非法");
+            }
 
             // 读取 element
             E element = elementCodec.decode(currentAddr);

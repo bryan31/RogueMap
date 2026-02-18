@@ -95,6 +95,9 @@ public class TempFileManager {
      * 强制 unmap MappedByteBuffer
      * 解决 Windows 平台文件句柄未释放的问题
      *
+     * 优先使用 Java 9+ 的 Unsafe.invokeCleaner()，
+     * 在 Java 8 上降级使用 DirectByteBuffer.cleaner().clean()。
+     *
      * @param buffer 要 unmap 的缓冲区
      */
     public static void forceUnmap(MappedByteBuffer buffer) {
@@ -102,8 +105,23 @@ public class TempFileManager {
             return;
         }
 
+        // 优先尝试 Java 9+ 方式：Unsafe.invokeCleaner()
         try {
-            // Java 9+ 使用不同的方法
+            Class<?> unsafeClass = Class.forName("sun.misc.Unsafe");
+            java.lang.reflect.Field unsafeField = unsafeClass.getDeclaredField("theUnsafe");
+            unsafeField.setAccessible(true);
+            Object unsafe = unsafeField.get(null);
+            Method invokeCleaner = unsafeClass.getMethod("invokeCleaner", java.nio.ByteBuffer.class);
+            invokeCleaner.invoke(unsafe, buffer);
+            return; // Java 9+ 路径成功
+        } catch (NoSuchMethodException e) {
+            // Java 8：invokeCleaner 不存在，降级到旧方式
+        } catch (Exception e) {
+            System.err.println("警告: invokeCleaner 调用失败: " + e.getMessage());
+        }
+
+        // Java 8 降级方式：DirectByteBuffer.cleaner().clean()
+        try {
             Method cleanerMethod = buffer.getClass().getMethod("cleaner");
             cleanerMethod.setAccessible(true);
             Object cleaner = cleanerMethod.invoke(buffer);
@@ -112,22 +130,8 @@ public class TempFileManager {
                 Method cleanMethod = cleaner.getClass().getMethod("clean");
                 cleanMethod.invoke(cleaner);
             }
-        } catch (NoSuchMethodException e) {
-            // Java 9+ 的情况
-            try {
-                Class<?> unsafeClass = Class.forName("sun.misc.Unsafe");
-                java.lang.reflect.Field unsafeField = unsafeClass.getDeclaredField("theUnsafe");
-                unsafeField.setAccessible(true);
-                Object unsafe = unsafeField.get(null);
-
-                Method invokeCleaner = unsafeClass.getMethod("invokeCleaner", java.nio.ByteBuffer.class);
-                invokeCleaner.invoke(unsafe, buffer);
-            } catch (Exception ex) {
-                // 如果都失败了，记录警告
-                System.err.println("警告: 无法强制 unmap MappedByteBuffer: " + ex.getMessage());
-            }
         } catch (Exception e) {
-            System.err.println("警告: unmap MappedByteBuffer 时发生异常: " + e.getMessage());
+            System.err.println("警告: 无法强制 unmap MappedByteBuffer: " + e.getMessage());
         }
     }
 

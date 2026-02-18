@@ -193,8 +193,8 @@ public class MmapAllocator implements Allocator {
 
     @Override
     public long allocate(int size) {
-        if (size <= 0) {
-            throw new IllegalArgumentException("大小必须为正数: " + size);
+        if (size <= 0 || size > 512 * 1024 * 1024) {
+            throw new IllegalArgumentException("分配大小非法: " + size + "（合法范围: 1 ~ 536870912 字节）");
         }
 
         // 使用 CAS 操作分配偏移量
@@ -324,5 +324,18 @@ public class MmapAllocator implements Allocator {
      */
     public boolean isTemporary() {
         return isTemporary;
+    }
+
+    /**
+     * 标记文件为"已打开"状态（用于崩溃检测）。
+     * 应在打开已存在的持久化文件并恢复状态后立即调用。
+     * 正常 close() 时 write() 会将 dirtyFlag 清为 0。
+     * 若进程在 close() 前崩溃，dirtyFlag 保持为 1，下次打开时可检测到。
+     */
+    public void markOpen() {
+        if (!isTemporary) {
+            long baseAddress = segmentBaseAddresses.get(0);
+            com.yomahub.roguemap.storage.MmapFileHeader.markOpen(baseAddress);
+        }
     }
 }

@@ -92,8 +92,13 @@ public class CircularQueueStorage<E> implements QueueStorage<E> {
         this.slotSize = SLOT_HEADER_SIZE + maxElementSize;
         this.lock = new StampedLock();
 
-        // 从header读取count
-        this.size = new AtomicInteger(getCount());
+        // Fix 9: 从 headIdx/tailIdx 重算 count，避免 crash 导致 COUNT_POS 与实际不一致
+        int head = UnsafeOps.getInt(bufferAddress + HEAD_IDX_POS);
+        int tail = UnsafeOps.getInt(bufferAddress + TAIL_IDX_POS);
+        int computedCount = tail >= head ? tail - head : capacity - head + tail;
+        // 写回校正后的 count，确保后续 getCount() 读取正确
+        UnsafeOps.putInt(bufferAddress + COUNT_POS, computedCount);
+        this.size = new AtomicInteger(computedCount);
     }
 
     private void initHeader() {

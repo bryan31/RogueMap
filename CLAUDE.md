@@ -25,6 +25,12 @@ mvn test -Dtest=QueueConcurrentTest
 
 # Run performance comparison tests
 mvn test -Dtest=*ComparisonTest
+
+# Run new queue tests (free list + crash recovery)
+mvn test -Dtest=LinkedQueueFreeListTest,QueueCrashRecoveryTest
+
+# Release build (GPG signing + publish to Maven Central)
+mvn clean deploy -P release
 ```
 
 ## Architecture Overview
@@ -57,17 +63,21 @@ Memory-Mapped Files (persistent or temporary)
 **RogueList<E>** - Doubly-linked list with O(1) random access:
 - Maintains position index array for fast random access via `get(index)`
 - Head/tail operations: `addFirst()`, `addLast()`, `removeFirst()`, `removeLast()`
+- **Warning**: `addFirst()` and `removeFirst()` are O(n) due to position index shift; prefer `addLast()`/`removeLast()` for large lists
 - Supports bidirectional iteration via `ListIterator<E>`
 
 **RogueSet<E>** - Concurrent set:
 - 64-segment design with StampedLock for high concurrency
 - Optimistic read support for improved read performance
 - Standard operations: `add()`, `contains()`, `remove()`
+- `SetIterator` uses lazy segment loading (O(N/64) heap peak instead of O(N))
 
 **RogueQueue<E>** - FIFO queue with two storage modes:
 - **Linked mode** (unbounded): `RogueQueue.mmap().linked()`
 - **Circular mode** (bounded): `RogueQueue.mmap().circular(capacity, maxElementSize)`
 - Standard operations: `offer()`, `poll()`, `peek()`, `isFull()`
+- LinkedQueue: snapshots head/tail/size to header on every offer/poll for crash recovery
+- CircularQueue: recalculates count from headIdx/tailIdx on recovery
 
 ### Core Packages
 
@@ -151,3 +161,23 @@ src/test/java/com/yomahub/roguemap/
 - **Thread Safety** - All operations are thread-safe via segmented locking
 - **Resource Management** - Always use try-with-resources to ensure proper cleanup
 - **File Pre-allocation** - Mmap mode pre-allocates disk space via `allocateSize()`
+- **Close Ordering** - `storage.close()` internally calls `allocator.close()`. Never call `allocator.close()` separately after `storage.close()` (double-close bug)
+- **Optional Dependencies** - Kryo (`KryoObjectCodec`) and SLF4J are optional. Core library has zero mandatory dependencies
+
+## Critical Implementation Details
+
+### MmapFileHeader Format (4KB)
+```
+offset  0-47:  9 data fields (magic, version, dataType, entryCount, etc.)
+offset 48-51:  CRC32 checksum of bytes 0-47
+offset 52-55:  writeGen (odd=writing, even=complete)
+offset 56-59:  dirtyFlag (1=unclean close, 0=clean close)
+offset 60-63:  Reserved
+offset 64-95:  Queue snapshot area (headOffset, tailOffset, size, valid)
+offset 96-4095: Reserved
+```
+
+### Memory Allocation
+- `MmapAllocator.allocate()` rejects sizes > 512MB (defensive check)
+- `MmapAllocator.free()` is a no-op (append-only allocator)
+- LinkedQueueStorage maintains its own free list for node recycling

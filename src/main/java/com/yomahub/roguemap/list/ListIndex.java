@@ -49,6 +49,9 @@ public class ListIndex {
     /**
      * 添加节点到链表头部
      *
+     * <p><b>时间复杂度: O(n)</b> — 需要将位置索引数组中所有元素后移一位。
+     * 大列表场景建议优先使用 {@link #addToTail(long)}（O(1)）。
+     *
      * @param newOffset 新节点的偏移量
      */
     public void addToHead(long newOffset) {
@@ -111,6 +114,9 @@ public class ListIndex {
 
     /**
      * 移除头部节点
+     *
+     * <p><b>时间复杂度: O(n)</b> — 需要将位置索引数组中所有元素前移一位。
+     * 大列表场景建议优先使用 {@link #removeTail()}（O(1)）。
      *
      * @return 被移除节点的偏移量，如果为空返回0
      */

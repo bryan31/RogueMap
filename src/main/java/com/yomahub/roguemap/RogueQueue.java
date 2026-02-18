@@ -128,13 +128,35 @@ public class RogueQueue<E> implements AutoCloseable {
 
     @Override
     public void close() {
-        // 如果是持久化模式，保存元数据
-        if (mmapAllocator != null && !mmapAllocator.isTemporary()) {
-            saveMmapMetadata();
+        Throwable primaryException = null;
+
+        // 1. 持久化模式：先保存元数据（此时 storage 和 allocator 仍可用）
+        try {
+            if (mmapAllocator != null && !mmapAllocator.isTemporary()) {
+                saveMmapMetadata();
+            }
+        } catch (Exception e) {
+            primaryException = e;
         }
 
-        storage.close();
-        allocator.close();
+        // 2. 关闭 storage（storage.close() 会调用 clear()，释放内部状态）
+        try {
+            storage.close();
+        } catch (Exception e) {
+            if (primaryException == null) primaryException = e;
+        }
+
+        // 3. 关闭 allocator（flush + 关闭文件通道）
+        // 注意：不再通过 storage 间接关闭 allocator，直接在此关闭，避免重复关闭
+        try {
+            allocator.close();
+        } catch (Exception e) {
+            if (primaryException == null) primaryException = e;
+        }
+
+        if (primaryException != null) {
+            throw new RuntimeException("关闭 RogueQueue 时发生错误", primaryException);
+        }
     }
 
     private void saveMmapMetadata() {
@@ -280,12 +302,15 @@ public class RogueQueue<E> implements AutoCloseable {
             if (!isTemporary && mmapAllocator.isExistingFile()) {
                 MmapFileHeader header = mmapAllocator.readHeader();
 
-                // 恢复allocator的offset
+                // 恢复 allocator 的 offset
                 mmapAllocator.restoreOffset(header.getCurrentOffset());
+
+                // 标记文件为"已打开"（崩溃检测）
+                mmapAllocator.markOpen();
 
                 // 根据数据类型恢复
                 if (header.getDataType() == MmapFileHeader.DATA_TYPE_QUEUE_LINKED) {
-                    storage = restoreLinkedQueue(allocator, header, baseAddress);
+                    storage = restoreLinkedQueue(allocator, mmapAllocator, header, baseAddress);
                 } else if (header.getDataType() == MmapFileHeader.DATA_TYPE_QUEUE_CIRCULAR) {
                     storage = restoreCircularQueue(allocator, header, baseAddress);
                 } else {
@@ -294,7 +319,10 @@ public class RogueQueue<E> implements AutoCloseable {
             } else {
                 // 创建新队列
                 if (queueType == QueueType.LINKED) {
-                    storage = new LinkedQueueStorage<>(allocator, elementCodec);
+                    // 持久化模式：传递快照地址用于崩溃恢复
+                    long snapshotAddr = isTemporary ? 0 : (baseAddress + MmapFileHeader.SNAPSHOT_HEAD_POS);
+                    long baseAddr = isTemporary ? 0 : baseAddress;
+                    storage = new LinkedQueueStorage<>(allocator, elementCodec, snapshotAddr, baseAddr);
                 } else {
                     storage = new CircularQueueStorage<>(allocator, elementCodec, circularCapacity, maxElementSize);
                 }
@@ -304,10 +332,29 @@ public class RogueQueue<E> implements AutoCloseable {
         }
 
         @SuppressWarnings("unchecked")
-        private QueueStorage<E> restoreLinkedQueue(Allocator allocator, MmapFileHeader header, long baseAddress) {
-            // 恢复链表队列
-            LinkedQueueStorage<E> storage = new LinkedQueueStorage<>(allocator, elementCodec);
+        private QueueStorage<E> restoreLinkedQueue(Allocator allocator, MmapAllocator mmapAllocator,
+                                                   MmapFileHeader header, long baseAddress) {
+            long snapshotAddr = baseAddress + MmapFileHeader.SNAPSHOT_HEAD_POS;
+            LinkedQueueStorage<E> storage = new LinkedQueueStorage<>(allocator, elementCodec, snapshotAddr, baseAddress);
 
+            // 检查上次是否正常关闭（dirtyFlag）
+            int dirtyFlag = MmapFileHeader.getDirtyFlag(baseAddress);
+            if (dirtyFlag == 1) {
+                // 上次可能崩溃：尝试从快照恢复（比 close() 写入的 metadata 更新）
+                int snapshotValid = MmapFileHeader.getSnapshotValid(baseAddress);
+                if (snapshotValid == 1) {
+                    storage.deserializeFromSnapshot();
+                    // 从快照恢复 allocator offset（比 header.getCurrentOffset() 更新）
+                    long snapshotAllocOffset = MmapFileHeader.getSnapshotAllocOffset(baseAddress);
+                    if (snapshotAllocOffset > header.getCurrentOffset()) {
+                        mmapAllocator.restoreOffset(snapshotAllocOffset);
+                    }
+                    return storage;
+                }
+                // 快照无效（首次 close() 前崩溃），降级到普通恢复
+            }
+
+            // 正常关闭恢复：从 close() 时写入的 metadata 恢复
             if (header.getIndexSize() > 0) {
                 long metadataAddress = baseAddress + header.getIndexOffset();
                 storage.deserialize(metadataAddress, (int) header.getIndexSize(), baseAddress);

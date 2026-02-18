@@ -117,6 +117,7 @@ public class KryoObjectCodec<T> implements Codec<T> {
 
         // 反序列化
         KryoHolder holder = kryoHolder.get();
+        holder.kryo.reset();  // 重置引用追踪表，确保每次解码从干净状态开始
         Input input = holder.input;
         input.setBuffer(data);
 
@@ -125,9 +126,14 @@ public class KryoObjectCodec<T> implements Codec<T> {
 
     /**
      * 使用 Kryo 将对象序列化为字节数组
+     *
+     * 每次调用前重置 Kryo 引用追踪表（kryo.reset()）和 Output 位置（output.reset()），
+     * 确保两次调用（calculateSize 和 encode）序列化结果确定性一致，防止 BufferUnderflow。
      */
     private byte[] serializeToBytes(Kryo kryo, Output output, T value) {
+        kryo.reset();  // 重置引用追踪表，确保幂等性
         ByteArrayOutputStream baos = new ByteArrayOutputStream();
+        output.reset();
         output.setOutputStream(baos);
         kryo.writeObject(output, value);
         output.flush();

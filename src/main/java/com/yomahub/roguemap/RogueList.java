@@ -60,6 +60,9 @@ public class RogueList<E> implements Iterable<E>, AutoCloseable {
     /**
      * 在列表头部插入元素
      *
+     * <p><b>时间复杂度: O(n)</b> — 头部插入需要将位置索引数组中所有元素后移一位。
+     * 大列表场景建议优先使用 {@link #addLast(Object)}（O(1)）。
+     *
      * @param element 要插入的元素
      */
     public void addFirst(E element) {
@@ -135,6 +138,9 @@ public class RogueList<E> implements Iterable<E>, AutoCloseable {
 
     /**
      * 移除并返回列表头部元素
+     *
+     * <p><b>时间复杂度: O(n)</b> — 头部移除需要将位置索引数组中所有元素前移一位。
+     * 大列表场景建议优先使用 {@link #removeLast()}（O(1)）。
      *
      * @return 头部元素，如果列表为空返回null
      */
@@ -297,20 +303,38 @@ public class RogueList<E> implements Iterable<E>, AutoCloseable {
 
     @Override
     public void close() {
-        // 如果是 MMAP 模式，检查是否需要保存索引
-        if (storage instanceof MmapStorage) {
-            MmapStorage mmapStorage = (MmapStorage) storage;
-            MmapAllocator mmapAllocator = mmapStorage.getAllocator();
+        Throwable primaryException = null;
 
-            // 临时文件模式：跳过持久化
-            if (!mmapAllocator.isTemporary()) {
-                saveMmapIndex();
+        // 1. 持久化模式：先保存索引（此时 storage 和 allocator 仍可用）
+        try {
+            if (storage instanceof MmapStorage) {
+                MmapStorage mmapStorage = (MmapStorage) storage;
+                MmapAllocator mmapAllocator = mmapStorage.getAllocator();
+                if (!mmapAllocator.isTemporary()) {
+                    saveMmapIndex();
+                }
             }
+        } catch (Exception e) {
+            primaryException = e;
         }
 
-        index.clear();
-        storage.close();
-        allocator.close();
+        // 2. 清空 index（不涉及 IO，无资源泄漏风险）
+        try {
+            index.clear();
+        } catch (Exception e) {
+            if (primaryException == null) primaryException = e;
+        }
+
+        // 3. 关闭 storage（MmapStorage.close() 内部已关闭 allocator，不再单独调用）
+        try {
+            storage.close();
+        } catch (Exception e) {
+            if (primaryException == null) primaryException = e;
+        }
+
+        if (primaryException != null) {
+            throw new RuntimeException("关闭 RogueList 时发生错误", primaryException);
+        }
     }
 
     /**

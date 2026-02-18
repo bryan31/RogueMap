@@ -190,21 +190,40 @@ public class RogueMap<K, V> implements AutoCloseable {
 
     @Override
     public void close() {
-        // 如果是 MMAP 模式，检查是否需要保存索引
-        if (storage instanceof MmapStorage) {
-            MmapStorage mmapStorage = (MmapStorage) storage;
-            MmapAllocator mmapAllocator = mmapStorage.getAllocator();
+        Throwable primaryException = null;
 
-            // 临时文件模式：跳过持久化
-            // 持久化模式：保存索引
-            if (!mmapAllocator.isTemporary()) {
-                saveMmapIndex();
+        // 1. 持久化模式：先保存索引（此时 storage 和 allocator 仍可用）
+        try {
+            if (storage instanceof MmapStorage) {
+                MmapStorage mmapStorage = (MmapStorage) storage;
+                MmapAllocator mmapAllocator = mmapStorage.getAllocator();
+                if (!mmapAllocator.isTemporary()) {
+                    saveMmapIndex();
+                }
             }
+        } catch (Exception e) {
+            primaryException = e;
         }
 
-        index.close();
-        storage.close();
-        allocator.close();
+        // 2. 关闭 index（不涉及 IO，无资源泄漏风险）
+        try {
+            index.close();
+        } catch (Exception e) {
+            if (primaryException == null) primaryException = e;
+        }
+
+        // 3. 关闭 storage（MmapStorage.close() 内部已关闭 allocator，不再单独调用）
+        try {
+            storage.close();
+        } catch (Exception e) {
+            if (primaryException == null) primaryException = e;
+        }
+
+        // 注意：不再单独调用 allocator.close()，MmapStorage.close() 已处理
+
+        if (primaryException != null) {
+            throw new RuntimeException("关闭 RogueMap 时发生错误", primaryException);
+        }
     }
 
     /**
