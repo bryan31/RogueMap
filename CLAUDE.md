@@ -222,6 +222,7 @@ src/test/java/com/yomahub/roguemap/
 - **Auto-Expansion** - `autoExpand(true)` in builder allows file to grow; `tryAllocate()` skips segment tail bytes to avoid cross-boundary writes; use `getAddressForOffset()` / `getFileOffsetForAddress()` for safe multi-segment address translation
 - **Transaction** - `map.beginTransaction()` returns AutoCloseable `Transaction<K,V>`; commit() is atomic; close() without commit() auto-rolls back; deadlock prevented by always locking segments in ascending index order
 - **Iterator Safety** - Set/List iterators are fail-fast; do not modify collection during iteration
+- **Test File Cleanup** - After JVM crash, @AfterEach doesn't run. Clean test directories in @BeforeEach to avoid corrupt leftover files crashing subsequent test runs
 
 ## Critical Implementation Details
 

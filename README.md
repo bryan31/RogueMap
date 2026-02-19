@@ -29,12 +29,13 @@
 
 RogueMap 将数据存储在 **内存映射文件** 中，让你享受简单 API，同时获得超越 JVM 限制的能力：
 
-- ✅ **无限容量** - 突破 JVM 堆限制，轻松处理 100GB+ 数据集
+- ✅ **无限容量** - 突破 JVM 堆限制，轻松处理 100GB+ 数据集，支持自动扩容
 - ✅ **零 GC 压力** - 堆内存占用减少 **84.7%**，告别 Full GC 噩梦
 - ✅ **数据持久化** - 进程重启后数据自动恢复，零成本持久化
 - ✅ **即开即用** - Mmap 模式秒级启动，无需预热加载
 - ✅ **写入更快** - 写入性能提升 **1.45 倍**，仅写入索引，延迟序列化
-- ✅ **临时存储** - 支持自动清理的临时文件模式，完美替代磁盘缓存
+- ✅ **事务支持** - 多键原子操作，Read Committed 隔离级别
+- ✅ **崩溃恢复** - CRC32 校验 + 写入代数 + 脏标志，确保数据一致性
 
 ### 核心优势
 
@@ -46,8 +47,9 @@ RogueMap 将数据存储在 **内存映射文件** 中，让你享受简单 API�
 | **持久化** | ❌ 不支持 | ✅ 支持 |
 | **进程重启** | 数据全部丢失 | **数据自动恢复** |
 | **写性能** | 基准 | **1.45 倍提升** |
-| **读性能** | 基准 | 约 1/4（反序列化开销） |
-| **临时文件** | ❌ 不支持 | ✅ 自动清理 |
+| **事务** | ❌ 不支持 | ✅ 原子多键操作 |
+| **自动扩容** | ❌ 不支持 | ✅ 按需增长 |
+| **崩溃恢复** | ❌ 不支持 | ✅ 快照恢复 |
 
 ### 适用场景
 
@@ -57,6 +59,7 @@ RogueMap 将数据存储在 **内存映射文件** 中，让你享受简单 API�
 - ✅ **大数据集** - 数据量超过 JVM 堆大小限制
 - ✅ **GC 敏感** - 对 Full GC 停顿零容忍的实时系统
 - ✅ **临时数据处理** - 海量临时数据暂存，自动清理避免泄露
+- ✅ **事务场景** - 需要多键原子操作的业务
 
 **RogueMap 不适合这些场景**：
 - ❌ **读密集型** - 如果你的应用是读多写少，HashMap 或 Caffeine 更合适
@@ -66,16 +69,17 @@ RogueMap 将数据存储在 **内存映射文件** 中，让你享受简单 API�
 ## ✨ 特性
 
 - ✅ **四种数据结构** - RogueMap（键值）、RogueList（链表）、RogueSet（集合）、RogueQueue（队列）
-- ✅ **多种存储模式** - 支持 内存映射文件持久化、内存映射临时文件 两种模式
 - ✅ **持久化支持** - Mmap 模式支持数据持久化到磁盘，支持自动恢复
-- ✅ **临时文件模式** - 支持自动清理的临时文件存储
 - ✅ **自动扩容** - 文件写满自动增长（`autoExpand`），无需预估容量，已有数据地址不受影响
-- ✅ **事务支持** - 多操作原子提交（`beginTransaction`），失败自动回滚，支持 try-with-resources
+- ✅ **事务支持** - 多操作原子提交（`beginTransaction`），Read Committed 隔离级别，死锁预防
+- ✅ **崩溃恢复** - CRC32 校验 + 写入代数机制 + 脏标志 + 快照，确保数据一致性
 - ✅ **零拷贝序列化** - 原始类型直接内存布局，无序列化开销
-- ✅ **高并发支持** - 分段锁设计（64 个段），StampedLock 乐观锁优化
-- ✅ **多种索引结构** - 支持 HashIndex、SegmentedHashIndex、LongPrimitiveIndex、IntPrimitiveIndex
-- ✅ **类型安全** - 泛型支持，编译时类型检查
-- ✅ **零依赖** - 核心库无第三方依赖
+- ✅ **高并发支持** - 64 段分段锁设计，StampedLock 乐观读优化
+- ✅ **多种索引结构** - HashIndex、SegmentedHashIndex、LongPrimitiveIndex、IntPrimitiveIndex
+- ✅ **运维指标** - 碎片率、使用量、条目数实时监控
+- ✅ **空间回收** - compact() 方法回收已删除数据占用的空间
+- ✅ **Fail-fast 迭代器** - 并发修改检测，防止数据不一致
+- ✅ **零依赖** - 核心库无第三方依赖（Kryo、SLF4J 为可选）
 
 ## 🚀 快速开始
 
@@ -85,13 +89,13 @@ RogueMap 将数据存储在 **内存映射文件** 中，让你享受简单 API�
 <dependency>
     <groupId>com.yomahub</groupId>
     <artifactId>roguemap</artifactId>
-    <version>1.0.0-BETA2</version>
+    <version>1.0.0</version>
 </dependency>
 ```
 
 ### RogueMap - 键值存储
 
-#### Mmap 临时文件模式
+#### 临时文件模式
 
 ```java
 // 自动创建临时文件，JVM 关闭后自动删除
@@ -103,7 +107,7 @@ RogueMap<Long, Long> tempMap = RogueMap.<Long, Long>mmap()
     .build();
 ```
 
-#### Mmap 模式（持久化存储）
+#### 持久化模式
 
 ```java
 // 第一次：创建并写入数据
@@ -169,7 +173,7 @@ RogueMap<String, Long> map = RogueMap.<String, Long>mmap()
     .autoExpand(true)                  // 开启自动扩容
     .expandFactor(2.0)                 // 每次扩容为原来的 2 倍（默认）
     // .maxFileSize(10L * 1024 * 1024 * 1024)  // 可选：设置最大文件大小上限
-    .keyCodec(new StringCodec())
+    .keyCodec(StringCodec.INSTANCE)
     .valueCodec(PrimitiveCodecs.LONG)
     .build();
 
@@ -181,9 +185,8 @@ for (int i = 0; i < 10_000_000; i++) {
 
 **自动扩容特性**：
 - 扩容时仅对新增区域创建映射，已有数据的物理地址完全不变
-- 线程安全：普通写入持读锁（无锁 CAS），扩容时独占写锁，扩容完成后其他线程继续正常写入
+- 线程安全：普通写入持读锁（CAS 无锁），扩容时独占写锁，扩容完成后其他线程继续正常写入
 - 扩容后文件大小可通过 `map.getMetrics().getTotalFileSize()` 查看
-- 不开启 `autoExpand` 时空间耗尽会抛出 `OutOfMemoryError`（默认行为，便于发现配置问题）
 
 #### 事务支持
 
@@ -203,7 +206,7 @@ try (RogueMap.Transaction<String, Long> txn = map.beginTransaction()) {
     txn.put("alice", 999L);
     txn.put("bob", 888L);
     if (someCondition) {
-        // 不调用 commit()，close() 时自动回滚，alice 和 bob 的值保持不变
+        // 不调用 commit()，close() 时自动回滚
         return;
     }
     txn.commit();
@@ -219,9 +222,28 @@ try (RogueMap.Transaction<String, Long> txn = map.beginTransaction()) {
 
 **事务特性**：
 - **原子性**：commit() 使用分段排序加锁，所有写入原子生效
-- **隔离级别**：Read Committed — 事务内读取的是已提交数据，看不到其他未提交事务的写入
+- **隔离级别**：Read Committed — 事务内读取的是已提交数据
 - **死锁预防**：始终按 segment index 升序加锁，杜绝死锁
-- **支持同 key 多次写入**：以最后一次 put 为准；put 后 remove 则最终不存在
+- **支持同 key 多次写入**：以最后一次 put 为准
+
+#### 运维指标与空间回收
+
+```java
+// 获取运维指标
+StorageMetrics metrics = map.getMetrics();
+System.out.println("文件大小: " + metrics.getTotalFileSize());
+System.out.println("已使用: " + metrics.getUsedBytes());
+System.out.println("碎片率: " + metrics.getFragmentationRatio());
+System.out.println("条目数: " + metrics.getEntryCount());
+
+// 判断是否需要压缩
+if (metrics.shouldCompact(0.5)) {  // 碎片率 > 50%
+    map = map.compact(newAllocateSize);  // 压缩并返回新实例
+}
+
+// 显式检查点（崩溃恢复点）
+map.checkpoint();  // 强制持久化索引，确保崩溃后可恢复
+```
 
 ### RogueList - 双向链表
 
@@ -235,8 +257,8 @@ RogueList<String> list = RogueList.<String>mmap()
     .build();
 
 // 头部/尾部操作
-list.addFirst("hello");
-list.addLast("world");
+list.addFirst("hello");   // 注意：O(n) 复杂度
+list.addLast("world");    // O(1) 复杂度，推荐使用
 
 String first = list.getFirst();     // "hello"
 String last = list.getLast();       // "world"
@@ -245,8 +267,8 @@ String last = list.getLast();       // "world"
 String element = list.get(0);       // "hello"
 
 // 移除操作
-String removed = list.removeFirst(); // "hello"
-String removed2 = list.removeLast(); // "world"
+String removed = list.removeFirst(); // 注意：O(n) 复杂度
+String removed2 = list.removeLast(); // O(1) 复杂度，推荐使用
 
 // 持久化模式
 RogueList<Long> persistentList = RogueList.<Long>mmap()
@@ -269,6 +291,8 @@ while (it.hasPrevious()) {
     System.out.println(it.previous());
 }
 ```
+
+> **⚠️ 性能提示**：`addFirst()` 和 `removeFirst()` 是 O(n) 复杂度（需要移动位置索引数组），大列表场景建议优先使用 `addLast()`/`removeLast()`（O(1)）。
 
 ### RogueSet - 并发集合
 
@@ -294,9 +318,14 @@ RogueSet<Long> persistentSet = RogueSet.<Long>mmap()
     .segmentCount(64)  // 64段分段锁
     .build();
 
-// 迭代器支持
-for (String s : set) {
-    System.out.println(s);
+// 迭代器支持（Fail-fast）
+try {
+    for (String s : set) {
+        // 迭代过程中修改集合会抛出 ConcurrentModificationException
+        set.add("new-element");  // 危险！
+    }
+} catch (ConcurrentModificationException e) {
+    // 处理并发修改
 }
 
 // 清空
@@ -308,7 +337,7 @@ set.clear();
 RogueQueue 支持两种模式：链表模式（无界）和环形缓冲区模式（有界）：
 
 ```java
-// 链表模式（无界队列）
+// 链表模式（无界队列）- 支持 compact 和崩溃恢复快照
 RogueQueue<String> linkedQueue = RogueQueue.<String>mmap()
     .temporary()
     .linked()
@@ -320,7 +349,7 @@ linkedQueue.offer("task2");
 String task = linkedQueue.poll();   // "task1"
 String peek = linkedQueue.peek();   // "task2"
 
-// 环形缓冲区模式（有界队列）
+// 环形缓冲区模式（有界队列）- 固定容量，无碎片
 RogueQueue<Long> circularQueue = RogueQueue.<Long>mmap()
     .persistent("data/myqueue.db")
     .circular(1024, 64)  // 容量1024，最大元素64字节
@@ -336,6 +365,17 @@ if (circularQueue.isFull()) {
 
 Long value = circularQueue.poll();  // 1L
 ```
+
+**链表队列特性**：
+- 无界容量，自动扩容
+- 空闲节点链表复用（poll 的节点可供 offer 复用）
+- 支持 compact() 回收空间
+- 每次 offer/poll 自动写入崩溃恢复快照
+
+**环形队列特性**：
+- 有界容量，固定槽位
+- 无碎片，适合高频入队出队场景
+- 不支持 compact（本身无碎片）
 
 ### 支持的数据类型
 
@@ -398,7 +438,6 @@ RogueMap<String, YourObject> objectMap = RogueMap.<String, YourObject>mmap()
 | **RogueMap Mmap 持久化** | **1,057ms** | **642ms** | **946K ops/s** | **1,558K ops/s** | **48 MB** | ✅ |
 | **RogueMap Mmap 临时** | 1,113ms | 704ms | 898K ops/s | 1,420K ops/s | **48 MB** | ❌ |
 | **MapDB OffHeap** | 8,259ms | 8,451ms | 121K ops/s | 118K ops/s | 11 MB | ❌ |
-| **MapDB 临时文件** | 9,002ms | 7,717ms | 111K ops/s | 130K ops/s | 8 MB | ❌ |
 | **MapDB 持久化** | 8,117ms | 7,709ms | 123K ops/s | 130K ops/s | 8 MB | ✅ |
 
 ### 核心发现
@@ -424,17 +463,6 @@ RogueMap<String, YourObject> objectMap = RogueMap.<String, YourObject>mmap()
 - 💾 **需要持久化** - 用户会话、缓存数据、临时计算结果
 - 📈 **大数据集** - 超过堆大小的数据处理
 - ⚡ **GC 敏感** - 对 GC 停顿零容忍的实时系统
-
-### 持久化方案性能对比
-
-**关键洞察**：
-- **RogueMap Mmap 持久化** 在所有支持持久化的方案中性能最优
-  - 写入: 1,057ms，比 HashMap(1,535ms) 快 **31%**，比 MapDB(8,117ms) 快 **7.7 倍**
-  - 读取: 642ms (155 万 ops/s)，比 MapDB(7,709ms) 快 **12 倍**，比 Redis 网络快 **15.6 倍**
-- **内存占用大幅优化**：RogueMap(48 MB) 比 HashMap(311 MB) 节省 **84.7%** 堆内存
-- **综合性价比最高**：在持久化 + 性能 + 内存三方面取得最佳平衡
-
-RogueMap 的设计哲学：**用可接受的读取速度，换取持久化存储和巨大的内存节省**
 
 ### 运行性能测试
 
@@ -477,59 +505,64 @@ Memory-Mapped Files
 
 ### 核心模块
 
-- **RogueMap** - 键值存储，提供 MmapBuilder 构建器
+- **RogueMap** - 键值存储，提供 MmapBuilder 构建器，支持事务
 - **RogueList** - 双向链表，O(1) 随机访问，支持 ListIterator
 - **RogueSet** - 并发集合，64 段分段锁，StampedLock 乐观读
 - **RogueQueue** - FIFO 队列，支持链表模式（无界）和环形缓冲区模式（有界）
 - **index** - Map 索引层
-  - `HashIndex` - 基础哈希索引，基于 ConcurrentHashMap
-  - `SegmentedHashIndex` - 分段哈希索引，64 个段 + StampedLock 乐观锁
+  - `HashIndex` - 基础哈希索引
+  - `SegmentedHashIndex` - 分段哈希索引，64 段 + StampedLock 乐观锁
   - `LongPrimitiveIndex` - Long 键原始数组索引，节省 81% 内存
   - `IntPrimitiveIndex` - Integer 键原始数组索引
 - **list** - List 索引层
   - `ListIndex` - 头尾指针 + 位置索引数组
-  - `RogueListIterator` - 双向迭代器
+  - `RogueListIterator` - 双向迭代器（Fail-fast）
 - **set** - Set 索引层
   - `SetIndex` - 分段哈希集合索引
-  - `SetIterator` - 迭代器实现
+  - `SetIterator` - 迭代器（Fail-fast，懒加载分段）
 - **queue** - Queue 存储层
-  - `LinkedQueueStorage` - 链表队列存储
+  - `LinkedQueueStorage` - 链表队列存储（空闲链表复用 + 崩溃恢复快照）
   - `CircularQueueStorage` - 环形缓冲区队列存储
 - **storage** - 存储引擎
   - `MmapStorage` - 内存映射文件存储
-  - `MmapFileHeader` - 文件头，支持多种数据类型
+  - `MmapFileHeader` - 文件头（CRC32 + 写入代数 + 脏标志 + 快照区）
 - **memory** - 内存管理
-  - `MmapAllocator` - 内存映射文件分配器，支持超过 2GB 的大文件
+  - `MmapAllocator` - 内存映射文件分配器，支持 >2GB 分段、自动扩容
   - `UnsafeOps` - 底层 Unsafe API 操作
 - **serialization** - 序列化层
   - `PrimitiveCodecs` - 原始类型零拷贝编解码器
   - `StringCodec` - String 编解码器
   - `KryoObjectCodec` - Kryo 对象序列化编解码器（可选）
 
-### 内存管理机制
+### 关键技术实现
 
-#### MmapAllocator（文件映射）
+#### MmapFileHeader 格式（4KB）
+```
+offset  0-47:  9 数据字段（magic, version, dataType, entryCount等）
+offset 48-51:  CRC32 校验和（确保数据完整性）
+offset 52-55:  writeGen（写入代数，奇数=写入中，偶数=完成）
+offset 56-59:  dirtyFlag（脏标志，1=异常关闭，0=正常关闭）
+offset 60-63:  保留
+offset 64-95:  Queue 快照区（headOffset, tailOffset, size, valid）
+offset 96-4095: 保留
+```
 
-- **特点**: 使用 MappedByteBuffer 将文件映射到内存
-- **大文件支持**: 单个分段最大 2GB，自动分多段处理
-- **自动扩容**: `autoExpand=true` 时空间不足自动扩展文件，新增区域创建新 segment，已有 segment 地址不变
-- **并发安全**: CAS 操作分配偏移量；扩容时使用 ReadWriteLock（普通分配持读锁，扩容独占写锁）
-- **双模式**: 支持持久化和临时文件
+#### 内存分配机制
+- **CAS 无锁分配**：普通分配使用 CAS 操作，高并发无阻塞
+- **分段支持**：单段最大 2GB，自动分多段处理超大文件
+- **自动扩容**：ReadWriteLock 保护，扩容时仅映射新增区域
+- **边界检测**：`tryAllocate()` 检测跨段边界，防止 SIGSEGV
 
-### 高并发支持
+#### 并发控制
+- **64 段分段锁**：每个段独立 StampedLock，减少锁竞争
+- **乐观读**：读操作优先使用乐观读，验证失败降级为读锁
+- **死锁预防**：事务按 segment index 升序加锁
 
-#### SegmentedHashIndex 并发机制
-
-- **分段数量**: 64 个独立段
-- **锁策略**: 每个段独立的 StampedLock
-- **乐观读**: 读操作优先使用乐观读，验证失败时降级为读锁
-- **性能**: 高并发场景下读性能提升 15 倍
-
-#### LongPrimitiveIndex 并发机制
-
-- **实现**: 原始数组 (long[] keys, long[] addresses, int[] sizes)
-- **锁策略**: StampedLock 乐观读
-- **内存优化**: 节省 81% 内存
+#### 崩溃恢复
+1. **CRC32 校验**：确保头部数据完整性
+2. **写入代数**：区分写入中/写入完成状态
+3. **脏标志**：检测是否正常关闭
+4. **Queue 快照**：每次 offer/poll 写入快照，崩溃后优先恢复
 
 ## 📖 文档
 
@@ -541,50 +574,46 @@ Memory-Mapped Files
 # 编译
 mvn clean compile
 
-# 运行测试
+# 运行所有测试（169 个测试用例）
 mvn test
 
 # 运行特定测试
 mvn test -Dtest=MmapFunctionalTest
-mvn test -Dtest=ConcurrentSafetyTest
-mvn test -Dtest=ListFunctionalTest
-mvn test -Dtest=SetFunctionalTest
-mvn test -Dtest=QueueFunctionalTest
+mvn test -Dtest=TransactionTest
+mvn test -Dtest=AutoExpansionTest
+
+# 发布到 Maven Central
+mvn clean deploy -P release
 ```
 
 ## 📝 系统要求
 
-- Java 8
+- Java 8+
 - Maven 3.6+
 
 ## ⚠️ 注意事项
 
-1. **Unsafe API 警告** - 本项目使用 `sun.misc.Unsafe` API，这是内部 API，可能在未来版本中被移除。以后将添加 Java 17/21 的替代实现。
+1. **Unsafe API 警告** - 本项目使用 `sun.misc.Unsafe` API，这是内部 API，在 Java 9+ 需要添加 JVM 参数。后续版本将添加 Java 17/21 的替代实现。
 
 2. **资源管理** - 请确保正确关闭实例以释放资源：
    ```java
    try (RogueMap<K, V> map = ...) {
        // 使用 map
-   } // 自动关闭，释放资源
-
-   try (RogueList<E> list = ...) {
-       // 使用 list
-   }
-
-   try (RogueSet<E> set = ...) {
-       // 使用 set
-   }
-
-   try (RogueQueue<E> queue = ...) {
-       // 使用 queue
-   }
+   } // 自动关闭，持久化模式会保存索引
    ```
 
-3. **文件大小** - Mmap 模式的 `allocateSize()` 会立即占用磁盘空间，请根据实际需求设置；如果不确定容量，建议开启 `autoExpand(true)` 让文件按需增长
+3. **文件大小** - Mmap 模式的 `allocateSize()` 会立即占用磁盘空间，请根据实际需求设置；如果不确定容量，建议开启 `autoExpand(true)` 让文件按需增长。
 
-4. **并发安全** - 所有数据结构都是线程安全的，支持高并发读写
+4. **并发安全** - 所有数据结构都是线程安全的，支持高并发读写。
 
-5. **事务注意事项** - 事务目前仅支持 `RogueMap`；commit 后调用 `checkpoint()` 可确保崩溃也能恢复
+5. **事务注意事项**：
+   - 事务仅支持 `RogueMap` 且使用 `SegmentedHashIndex`（默认）
+   - commit 后调用 `checkpoint()` 可确保崩溃也能恢复
+   - 隔离级别为 Read Committed，不支持读自己的未提交写入
+
+6. **迭代器注意事项**：
+   - RogueSet 和 RogueList 的迭代器是 Fail-fast 的
+   - 迭代过程中修改集合会抛出 `ConcurrentModificationException`
 
 ## 🤝 贡献
 
