@@ -2,6 +2,7 @@ package com.yomahub.roguemap;
 
 import com.yomahub.roguemap.memory.Allocator;
 import com.yomahub.roguemap.memory.MmapAllocator;
+import com.yomahub.roguemap.memory.UnsafeOps;
 import com.yomahub.roguemap.queue.CircularQueueStorage;
 import com.yomahub.roguemap.queue.LinkedQueueStorage;
 import com.yomahub.roguemap.queue.QueueStorage;
@@ -9,6 +10,8 @@ import com.yomahub.roguemap.serialization.Codec;
 import com.yomahub.roguemap.storage.MmapFileHeader;
 import com.yomahub.roguemap.storage.MmapStorage;
 import com.yomahub.roguemap.storage.StorageEngine;
+
+import java.io.File;
 
 /**
  * RogueQueue - 基于内存映射文件的高性能队列
@@ -126,6 +129,136 @@ public class RogueQueue<E> implements AutoCloseable {
         }
     }
 
+    /**
+     * 获取运维指标
+     *
+     * @return 存储指标（文件大小、碎片率等）
+     */
+    public StorageMetrics getMetrics() {
+        if (mmapAllocator == null) {
+            throw new UnsupportedOperationException("仅 MMAP 模式支持 getMetrics()");
+        }
+
+        long totalFileSize = mmapAllocator.getFileSize();
+        long usedBytes = mmapAllocator.usedMemory();
+        long availableBytes = mmapAllocator.availableMemory();
+        int entryCount = storage.size();
+
+        long dataRegion = usedBytes - MmapFileHeader.HEADER_SIZE;
+        long reclaimableBytes = 0L;
+        long deadBytes = 0L;
+        long liveBytes;
+        double fragmentationRatio = 0.0;
+
+        if (storage instanceof LinkedQueueStorage) {
+            @SuppressWarnings("unchecked")
+            LinkedQueueStorage<E> linkedStorage = (LinkedQueueStorage<E>) storage;
+            // free list 节点可被后续 offer() 复用，不计入碎片
+            reclaimableBytes = linkedStorage.getFreeListBytes();
+            liveBytes = Math.max(0, dataRegion - reclaimableBytes);
+            // fragmentationRatio 仅计真正无法复用的死数据（正常操作下为 0）
+            fragmentationRatio = 0.0;
+        } else {
+            // CircularQueue：固定槽位分配，无碎片
+            liveBytes = Math.max(0, dataRegion);
+        }
+
+        return new StorageMetrics(totalFileSize, usedBytes, availableBytes,
+                entryCount, liveBytes, deadBytes, reclaimableBytes, fragmentationRatio,
+                mmapAllocator.isTemporary(), mmapAllocator.getFilePath());
+    }
+
+    /**
+     * 压缩存储文件，回收已删除数据占用的空间（仅链表队列支持）
+     *
+     * <p>创建一个仅包含活跃节点的新文件（丢弃空闲链表），关闭当前实例，替换原文件后重新打开。
+     * 返回新的 RogueQueue 实例（原实例已关闭，不可再使用）。
+     *
+     * <p>使用方式：{@code queue = queue.compact(newAllocateSize);}
+     *
+     * @param newAllocateSize 新文件的预分配大小（字节）
+     * @return 压缩后的新 RogueQueue 实例
+     */
+    public RogueQueue<E> compact(long newAllocateSize) {
+        if (mmapAllocator == null || mmapAllocator.isTemporary()) {
+            throw new UnsupportedOperationException("仅 MMAP 持久化模式支持 compact()");
+        }
+        if (!(storage instanceof LinkedQueueStorage)) {
+            throw new UnsupportedOperationException("仅链表队列支持 compact()，环形队列不产生碎片");
+        }
+
+        LinkedQueueStorage<E> linkedStorage = (LinkedQueueStorage<E>) storage;
+        String filePath = mmapAllocator.getFilePath();
+        String tempPath = filePath + ".compact";
+
+        // 1. 创建新文件的 allocator
+        MmapAllocator newAllocator = new MmapAllocator(tempPath, newAllocateSize, false);
+        try {
+            long newBaseAddress = newAllocator.getBaseAddress();
+            long snapshotAddr = newBaseAddress + MmapFileHeader.SNAPSHOT_HEAD_POS;
+            LinkedQueueStorage<E> newStorage = new LinkedQueueStorage<>(newAllocator, elementCodec, snapshotAddr, newBaseAddress);
+
+            // 2. 从头到尾遍历活跃节点，解码后重新入队
+            long currentNode = linkedStorage.getHeadOffset();
+            while (currentNode != 0) {
+                // 从旧节点解码元素
+                long elementAddr = currentNode + LinkedQueueStorage.NODE_HEADER_SIZE;
+                E element = elementCodec.decode(elementAddr);
+
+                // 入队到新 storage（自动分配新节点）
+                newStorage.offer(element);
+
+                // 获取下一个节点
+                currentNode = UnsafeOps.getLong(currentNode + LinkedQueueStorage.NEXT_OFFSET_POS);
+            }
+
+            // 3. 序列化新 storage 元数据
+            long currentDataOffset = newAllocator.usedMemory();
+            int metadataSize = newStorage.serializedSize();
+            long metadataAddress = newBaseAddress + currentDataOffset;
+            newStorage.serialize(metadataAddress, newBaseAddress);
+
+            MmapFileHeader header = new MmapFileHeader();
+            header.setMagicNumber(MmapFileHeader.MAGIC_NUMBER);
+            header.setVersion(MmapFileHeader.VERSION);
+            header.setDataType(MmapFileHeader.DATA_TYPE_QUEUE_LINKED);
+            header.setIndexType(0);
+            header.setEntryCount(newStorage.size());
+            header.setCurrentOffset(currentDataOffset + metadataSize);
+            header.setIndexOffset(currentDataOffset);
+            header.setIndexSize(metadataSize);
+            newAllocator.writeHeader(header);
+
+            // 4. 关闭新文件
+            newStorage.close();
+            newAllocator.close();
+        } catch (Exception e) {
+            newAllocator.close();
+            new File(tempPath).delete();
+            throw new RuntimeException("compact 失败", e);
+        }
+
+        // 5. 关闭旧文件
+        storage.close();
+        allocator.close();
+
+        // 6. 交换文件
+        File oldFile = new File(filePath);
+        File newFile = new File(tempPath);
+        oldFile.delete();
+        if (!newFile.renameTo(oldFile)) {
+            throw new RuntimeException("compact 文件重命名失败: " + tempPath + " -> " + filePath);
+        }
+
+        // 7. 重新打开
+        return RogueQueue.<E>mmap()
+                .persistent(filePath)
+                .allocateSize(newAllocateSize)
+                .linked()
+                .elementCodec(elementCodec)
+                .build();
+    }
+
     @Override
     public void close() {
         Throwable primaryException = null;
@@ -203,6 +336,9 @@ public class RogueQueue<E> implements AutoCloseable {
         private String persistentFilePath;
         private long allocateSize = 256L * 1024 * 1024; // 默认 256MB
         private boolean isTemporary = false;
+        private boolean autoExpand = false;
+        private double expandFactor = 2.0;
+        private long maxFileSize = 0L;
 
         // 队列类型
         private QueueType queueType = QueueType.LINKED;
@@ -261,6 +397,45 @@ public class RogueQueue<E> implements AutoCloseable {
         }
 
         /**
+         * 开启自动扩容（默认关闭）
+         *
+         * @param autoExpand true 开启自动扩容
+         * @return 此构建器
+         */
+        public MmapBuilder<E> autoExpand(boolean autoExpand) {
+            this.autoExpand = autoExpand;
+            return this;
+        }
+
+        /**
+         * 设置每次扩容的倍数（默认 2.0）
+         *
+         * @param expandFactor 扩容倍数，必须 >= 1.1
+         * @return 此构建器
+         */
+        public MmapBuilder<E> expandFactor(double expandFactor) {
+            if (expandFactor < 1.1) {
+                throw new IllegalArgumentException("expandFactor 必须 >= 1.1");
+            }
+            this.expandFactor = expandFactor;
+            return this;
+        }
+
+        /**
+         * 设置文件大小上限（字节），0 表示无上限（默认）
+         *
+         * @param maxFileSize 最大文件字节数
+         * @return 此构建器
+         */
+        public MmapBuilder<E> maxFileSize(long maxFileSize) {
+            if (maxFileSize < 0) {
+                throw new IllegalArgumentException("maxFileSize 不能为负数");
+            }
+            this.maxFileSize = maxFileSize;
+            return this;
+        }
+
+        /**
          * 使用环形缓冲区模式（有界队列）
          *
          * @param capacity       队列容量
@@ -292,7 +467,8 @@ public class RogueQueue<E> implements AutoCloseable {
             }
 
             // 创建 MmapAllocator
-            MmapAllocator mmapAllocator = new MmapAllocator(persistentFilePath, allocateSize, isTemporary);
+            MmapAllocator mmapAllocator = new MmapAllocator(persistentFilePath, allocateSize, isTemporary,
+                    autoExpand, expandFactor, maxFileSize);
             Allocator allocator = mmapAllocator;
             long baseAddress = mmapAllocator.getBaseAddress();
 

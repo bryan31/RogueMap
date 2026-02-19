@@ -4,6 +4,7 @@ import com.yomahub.roguemap.serialization.Codec;
 
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.ConcurrentModificationException;
 import java.util.Iterator;
 import java.util.List;
 import java.util.NoSuchElementException;
@@ -18,6 +19,7 @@ public class SetIterator<E> implements Iterator<E> {
     private final SetIndex<E> index;
     private final Codec<E> elementCodec;
     private final int totalSegments;
+    private final int expectedModCount;
 
     private int currentSegment;
     private List<E> currentBatch;
@@ -30,6 +32,7 @@ public class SetIterator<E> implements Iterator<E> {
         this.currentSegment = 0;
         this.currentBatch = Collections.emptyList();
         this.batchIdx = 0;
+        this.expectedModCount = index.getModCount();
 
         loadNextNonEmptySegment();
     }
@@ -58,6 +61,9 @@ public class SetIterator<E> implements Iterator<E> {
 
     @Override
     public E next() {
+        if (index.getModCount() != expectedModCount) {
+            throw new ConcurrentModificationException();
+        }
         if (!hasNext()) {
             throw new NoSuchElementException();
         }

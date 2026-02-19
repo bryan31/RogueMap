@@ -15,6 +15,13 @@ public class UnsafeOps {
 
     private static final Unsafe UNSAFE;
 
+    /**
+     * java.nio.Buffer.address 字段的对象内偏移量。
+     * 用于替代 sun.nio.ch.DirectBuffer.address() 强制转换，实现 Java 8-21 兼容。
+     * Unsafe.objectFieldOffset() 不检查访问权限，无需 --add-opens java.base/sun.nio.ch。
+     */
+    private static final long BUFFER_ADDRESS_OFFSET;
+
     static {
         try {
             Field field = Unsafe.class.getDeclaredField("theUnsafe");
@@ -22,6 +29,14 @@ public class UnsafeOps {
             UNSAFE = (Unsafe) field.get(null);
         } catch (Exception e) {
             throw new RuntimeException("获取 Unsafe 实例失败", e);
+        }
+        try {
+            // java.nio.Buffer.address 字段自 Java 1.4 起存在，保存 direct buffer 的原生指针。
+            // objectFieldOffset 绕过访问控制，兼容 Java 8-21，无需任何 --add-opens 参数。
+            Field addressField = java.nio.Buffer.class.getDeclaredField("address");
+            BUFFER_ADDRESS_OFFSET = UNSAFE.objectFieldOffset(addressField);
+        } catch (Exception e) {
+            throw new RuntimeException("无法获取 Buffer.address 字段偏移量", e);
         }
     }
 
@@ -207,7 +222,9 @@ public class UnsafeOps {
         if (!buffer.isDirect()) {
             throw new IllegalArgumentException("Buffer 必须是 direct 类型");
         }
-        return ((sun.nio.ch.DirectBuffer) buffer).address();
+        // 通过 Unsafe 直接读取 java.nio.Buffer.address 字段，替代 sun.nio.ch.DirectBuffer 强制转换。
+        // 等价于 sun.nio.ch.DirectBuffer.address()，但兼容 Java 8-21，无需 --add-opens 参数。
+        return UNSAFE.getLong(buffer, BUFFER_ADDRESS_OFFSET);
     }
 
     /**

@@ -2,6 +2,7 @@ package com.yomahub.roguemap.list;
 
 import com.yomahub.roguemap.serialization.Codec;
 
+import java.util.ConcurrentModificationException;
 import java.util.ListIterator;
 import java.util.NoSuchElementException;
 
@@ -13,6 +14,7 @@ public class RogueListIterator<E> implements java.util.ListIterator<E> {
     private final ListIndex index;
     private final Codec<E> elementCodec;
     private final long baseAddress;
+    private final int expectedModCount;
 
     private int currentIndex;
     private int size;
@@ -27,6 +29,7 @@ public class RogueListIterator<E> implements java.util.ListIterator<E> {
         this.baseAddress = baseAddress;
         this.currentIndex = startIndex;
         this.size = index.size();
+        this.expectedModCount = index.getModCount();
     }
 
     @Override
@@ -36,6 +39,9 @@ public class RogueListIterator<E> implements java.util.ListIterator<E> {
 
     @Override
     public E next() {
+        if (index.getModCount() != expectedModCount) {
+            throw new ConcurrentModificationException();
+        }
         if (!hasNext()) {
             throw new NoSuchElementException();
         }
@@ -58,6 +64,9 @@ public class RogueListIterator<E> implements java.util.ListIterator<E> {
 
     @Override
     public E previous() {
+        if (index.getModCount() != expectedModCount) {
+            throw new ConcurrentModificationException();
+        }
         if (!hasPrevious()) {
             throw new NoSuchElementException();
         }

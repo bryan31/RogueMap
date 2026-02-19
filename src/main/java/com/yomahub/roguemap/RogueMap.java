@@ -9,10 +9,14 @@ import com.yomahub.roguemap.index.LongPrimitiveIndex;
 import com.yomahub.roguemap.index.SegmentedHashIndex;
 import com.yomahub.roguemap.memory.Allocator;
 import com.yomahub.roguemap.memory.MmapAllocator;
+import com.yomahub.roguemap.memory.UnsafeOps;
 import com.yomahub.roguemap.serialization.Codec;
 import com.yomahub.roguemap.serialization.PrimitiveCodecs;
+import com.yomahub.roguemap.storage.MmapFileHeader;
 import com.yomahub.roguemap.storage.MmapStorage;
 import com.yomahub.roguemap.storage.StorageEngine;
+
+import java.io.File;
 
 /**
  * RogueMap - 高性能堆外键值存储
@@ -182,10 +186,207 @@ public class RogueMap<K, V> implements AutoCloseable {
     }
 
     /**
+     * 开启一个新事务。
+     *
+     * <p>事务提供多键操作的原子性（要么全部提交，要么全部回滚）。
+     * 支持 try-with-resources：未调用 {@link RogueMapTransaction#commit()} 时，
+     * {@code close()} 会自动执行 rollback。
+     *
+     * <p><b>仅支持 SegmentedHashIndex（默认索引）</b>。
+     * 使用 basicIndex() 或 primitiveIndex() 构建的 RogueMap 不支持事务，调用此方法会抛出异常。
+     *
+     * <p>示例：
+     * <pre>{@code
+     * try (RogueMap.Transaction<K,V> txn = map.beginTransaction()) {
+     *     txn.put("a", 1L);
+     *     txn.remove("b");
+     *     txn.commit();
+     * }
+     * }</pre>
+     *
+     * @return 新的事务实例
+     * @throws UnsupportedOperationException 若当前索引类型不支持事务
+     */
+    public RogueMapTransaction<K, V> beginTransaction() {
+        if (!(index instanceof com.yomahub.roguemap.index.SegmentedHashIndex)) {
+            throw new UnsupportedOperationException(
+                    "事务仅支持 SegmentedHashIndex（segmentedIndex 或默认索引）。" +
+                    "basicIndex() 和 primitiveIndex() 不支持事务。");
+        }
+        @SuppressWarnings("unchecked")
+        com.yomahub.roguemap.index.SegmentedHashIndex<K> segIndex =
+                (com.yomahub.roguemap.index.SegmentedHashIndex<K>) index;
+        return new RogueMapTransaction<>(this, segIndex, allocator, valueCodec);
+    }
+
+    /**
+     * 将当前索引持久化到磁盘（检查点）
+     *
+     * <p>调用此方法后，即使进程崩溃（不调用 close()），下次打开文件时也能恢复到
+     * 最近一次 checkpoint 时的状态。checkpoint 之后写入的数据在崩溃后会丢失。
+     *
+     * <p>建议在写入一定量数据后定期调用（例如每 1000 次 put 或每 5 秒），
+     * 以控制崩溃时的数据丢失窗口。
+     *
+     * <p>注意：每次 checkpoint 会消耗一定的文件空间用于存储索引快照，
+     * 可通过 compact() 回收。仅 persistent 模式有效。
+     */
+    public void checkpoint() {
+        if (!(storage instanceof MmapStorage)) {
+            return;
+        }
+        MmapStorage mmapStorage = (MmapStorage) storage;
+        MmapAllocator mmapAllocator = mmapStorage.getAllocator();
+        if (mmapAllocator.isTemporary()) {
+            return;
+        }
+
+        // 序列化索引到当前数据尾部（复用已有的 saveMmapIndex 逻辑）
+        // saveMmapIndex() 内部使用 allocate() 分配索引空间，allocator 偏移已推进到索引之后
+        saveMmapIndex();
+
+        // 强制刷盘确保持久化
+        mmapAllocator.flush();
+    }
+
+    /**
+     * 压缩存储文件，回收已删除/更新数据占用的空间
+     *
+     * <p>创建一个仅包含活跃数据的新文件，关闭当前实例，替换原文件后重新打开。
+     * 返回新的 RogueMap 实例（原实例已关闭，不可再使用）。
+     *
+     * <p>使用方式：{@code map = map.compact(newAllocateSize);}
+     *
+     * @param newAllocateSize 新文件的预分配大小（字节）
+     * @return 压缩后的新 RogueMap 实例
+     */
+    public RogueMap<K, V> compact(long newAllocateSize) {
+        if (!(storage instanceof MmapStorage)) {
+            throw new UnsupportedOperationException("仅 MMAP 持久化模式支持 compact()");
+        }
+        MmapAllocator oldAllocator = ((MmapStorage) storage).getAllocator();
+        if (oldAllocator.isTemporary()) {
+            throw new UnsupportedOperationException("临时文件不支持 compact()");
+        }
+
+        String filePath = oldAllocator.getFilePath();
+        String tempPath = filePath + ".compact";
+        int indexType = getIndexType(index);
+
+        // 1. 创建新文件的 allocator
+        MmapAllocator newAllocator = new MmapAllocator(tempPath, newAllocateSize, false);
+        try {
+            long newBaseAddress = newAllocator.getBaseAddress();
+
+            // 2. 创建同类型的新索引
+            Index<K> newIndex = createIndexByType(indexType, keyCodec);
+
+            // 3. 复制所有活跃数据到新文件
+            index.forEach((key, address, size) -> {
+                long newAddr = newAllocator.allocate(size);
+                if (newAddr == 0) {
+                    throw new RuntimeException("compact 空间不足：新文件大小 " + newAllocateSize + " 不够容纳所有活跃数据");
+                }
+                UnsafeOps.copyMemory(address, newAddr, size);
+                @SuppressWarnings("unchecked")
+                K typedKey = (K) key;
+                newIndex.putAndGetOld(typedKey, newAddr, size);
+            });
+
+            // 4. 序列化新索引到新文件
+            long currentDataOffset = newAllocator.usedMemory();
+            int newIndexSize = newIndex.serializedSize();
+            long indexAddress = newBaseAddress + currentDataOffset;
+            newIndex.serializeWithOffsets(indexAddress, newBaseAddress);
+
+            MmapFileHeader header = new MmapFileHeader();
+            header.setMagicNumber(MmapFileHeader.MAGIC_NUMBER);
+            header.setVersion(MmapFileHeader.VERSION);
+            header.setDataType(MmapFileHeader.DATA_TYPE_MAP);
+            header.setIndexType(indexType);
+            header.setEntryCount(newIndex.size());
+            header.setCurrentOffset(currentDataOffset);
+            header.setIndexOffset(currentDataOffset);
+            header.setIndexSize(newIndexSize);
+            newAllocator.writeHeader(header);
+
+            // 5. 关闭新文件（flush 到磁盘）
+            newIndex.close();
+            newAllocator.close();
+        } catch (Exception e) {
+            newAllocator.close();
+            new File(tempPath).delete();
+            throw new RuntimeException("compact 失败", e);
+        }
+
+        // 6. 关闭旧文件
+        index.close();
+        storage.close();
+
+        // 7. 交换文件
+        File oldFile = new File(filePath);
+        File newFile = new File(tempPath);
+        oldFile.delete();
+        if (!newFile.renameTo(oldFile)) {
+            throw new RuntimeException("compact 文件重命名失败: " + tempPath + " -> " + filePath);
+        }
+
+        // 8. 重新打开压缩后的文件
+        return RogueMap.<K, V>mmap()
+                .persistent(filePath)
+                .allocateSize(newAllocateSize)
+                .keyCodec(keyCodec)
+                .valueCodec(valueCodec)
+                .build();
+    }
+
+    @SuppressWarnings("unchecked")
+    private static <K> Index<K> createIndexByType(int indexType, Codec<K> keyCodec) {
+        if (indexType == 0) {
+            return new HashIndex<>(keyCodec, 16);
+        } else if (indexType == 1) {
+            return new SegmentedHashIndex<>(keyCodec, 64, 16);
+        } else if (indexType == 2) {
+            return (Index<K>) new LongPrimitiveIndex(16);
+        } else if (indexType == 3) {
+            return (Index<K>) new IntPrimitiveIndex(16);
+        }
+        return new SegmentedHashIndex<>(keyCodec, 64, 16);
+    }
+
+    /**
      * 获取存储引擎（用于测试）
      */
     public StorageEngine getStorage() {
         return storage;
+    }
+
+    /**
+     * 获取运维指标
+     *
+     * @return 存储指标（文件大小、碎片率等）
+     */
+    public StorageMetrics getMetrics() {
+        if (!(storage instanceof MmapStorage)) {
+            throw new UnsupportedOperationException("仅 MMAP 模式支持 getMetrics()");
+        }
+        MmapAllocator mmapAllocator = ((MmapStorage) storage).getAllocator();
+
+        long totalFileSize = mmapAllocator.getFileSize();
+        long usedBytes = mmapAllocator.usedMemory();
+        long availableBytes = mmapAllocator.availableMemory();
+        int entryCount = index.size();
+
+        final long[] liveBytes = {0};
+        index.forEach((key, address, size) -> liveBytes[0] += size);
+
+        long dataRegion = usedBytes - MmapFileHeader.HEADER_SIZE;
+        long deadBytes = dataRegion > 0 ? dataRegion - liveBytes[0] : 0;
+        double fragmentationRatio = dataRegion > 0 ? (double) deadBytes / dataRegion : 0.0;
+
+        return new StorageMetrics(totalFileSize, usedBytes, availableBytes,
+                entryCount, liveBytes[0], deadBytes, 0L, fragmentationRatio,
+                mmapAllocator.isTemporary(), mmapAllocator.getFilePath());
     }
 
     @Override
@@ -233,16 +434,24 @@ public class RogueMap<K, V> implements AutoCloseable {
         MmapStorage mmapStorage = (MmapStorage) storage;
         MmapAllocator mmapAllocator = mmapStorage.getAllocator();
 
-        // 获取当前数据使用的偏移量
+        // 获取当前数据使用的偏移量（索引写完后，reload 从此处恢复数据）
         long currentDataOffset = allocator.usedMemory();
 
         // 计算索引大小
         int indexSize = index.serializedSize();
 
-        // 索引数据放在所有数据之后（避免覆盖数据）
-        long indexOffset = currentDataOffset;
+        // 使用 allocate() 分配索引空间：正确处理多段边界（扩容场景），
+        // 同时在必要时自动触发 expand（autoExpand=true 时）
+        long indexAddress = allocator.allocate(indexSize);
+        if (indexAddress == 0) {
+            throw new OutOfMemoryError("无法分配 " + indexSize + " 字节保存索引");
+        }
+        // 计算索引在文件中的逻辑偏移（用于 reload 时定位索引）
+        long indexOffset = mmapAllocator.getFileOffsetForAddress(indexAddress);
+
+        // baseAddress 始终是 segment 0 的物理基址，
+        // 序列化存储的相对偏移 = physAddr - baseAddress（单段时等于文件偏移，多段时仅用于当次会话内读写）
         long baseAddress = mmapAllocator.getBaseAddress();
-        long indexAddress = baseAddress + indexOffset;
 
         // 序列化索引（使用相对偏移量）
         index.serializeWithOffsets(indexAddress, baseAddress);
@@ -446,6 +655,9 @@ public class RogueMap<K, V> implements AutoCloseable {
         private String persistentFilePath;
         private long allocateSize = 2L * 1024 * 1024 * 1024; // 默认 2GB
         private boolean isTemporary = false;
+        private boolean autoExpand = false;
+        private double expandFactor = 2.0;
+        private long maxFileSize = 0L;
 
         private MmapBuilder() {
         }
@@ -491,6 +703,50 @@ public class RogueMap<K, V> implements AutoCloseable {
             return this;
         }
 
+        /**
+         * 开启自动扩容（默认关闭）
+         *
+         * <p>开启后，当文件空间不足时会自动按 expandFactor 倍数扩大文件，无需重新创建实例。
+         * 扩容时仅对新增区域创建映射，已有数据地址完全不变，扩容对正在运行的读写操作透明。
+         *
+         * <p>注意：扩容后 getMetrics().getTotalFileSize() 会随之增大。
+         *
+         * @param autoExpand true 开启自动扩容
+         * @return 此构建器
+         */
+        public MmapBuilder<K, V> autoExpand(boolean autoExpand) {
+            this.autoExpand = autoExpand;
+            return this;
+        }
+
+        /**
+         * 设置每次扩容的倍数（默认 2.0）
+         *
+         * @param expandFactor 扩容倍数，必须 >= 1.1
+         * @return 此构建器
+         */
+        public MmapBuilder<K, V> expandFactor(double expandFactor) {
+            if (expandFactor < 1.1) {
+                throw new IllegalArgumentException("expandFactor 必须 >= 1.1");
+            }
+            this.expandFactor = expandFactor;
+            return this;
+        }
+
+        /**
+         * 设置文件大小上限（字节），0 表示无上限（默认）
+         *
+         * @param maxFileSize 最大文件字节数
+         * @return 此构建器
+         */
+        public MmapBuilder<K, V> maxFileSize(long maxFileSize) {
+            if (maxFileSize < 0) {
+                throw new IllegalArgumentException("maxFileSize 不能为负数");
+            }
+            this.maxFileSize = maxFileSize;
+            return this;
+        }
+
         @Override
         public RogueMap<K, V> build() {
             if (keyCodec == null) {
@@ -506,7 +762,8 @@ public class RogueMap<K, V> implements AutoCloseable {
             }
 
             // 创建 MmapAllocator（临时模式会自动生成文件路径）
-            MmapAllocator mmapAllocator = new MmapAllocator(persistentFilePath, allocateSize, isTemporary);
+            MmapAllocator mmapAllocator = new MmapAllocator(persistentFilePath, allocateSize, isTemporary,
+                    autoExpand, expandFactor, maxFileSize);
             Allocator allocator = mmapAllocator;
             StorageEngine storage = new MmapStorage(mmapAllocator);
 
@@ -529,9 +786,12 @@ public class RogueMap<K, V> implements AutoCloseable {
 
                     if (header.getIndexSize() > 0) {
                         long baseAddress = mmapAllocator.getBaseAddress();
-                        long indexAddress = baseAddress + header.getIndexOffset();
+                        long indexAddress = mmapAllocator.getAddressForOffset(header.getIndexOffset());
                         index.deserializeWithOffsets(indexAddress, (int) header.getIndexSize(), baseAddress);
                     }
+
+                    // 标记文件为"已打开"（崩溃检测）
+                    mmapAllocator.markOpen();
                 } else {
                     // 新文件模式
                     index = createNewIndex(keyCodec);

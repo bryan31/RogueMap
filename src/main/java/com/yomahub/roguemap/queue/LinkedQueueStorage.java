@@ -5,6 +5,9 @@ import com.yomahub.roguemap.memory.UnsafeOps;
 import com.yomahub.roguemap.serialization.Codec;
 import com.yomahub.roguemap.storage.MmapFileHeader;
 
+import java.util.ArrayDeque;
+import java.util.Map;
+import java.util.TreeMap;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.locks.StampedLock;
 
@@ -53,9 +56,12 @@ public class LinkedQueueStorage<E> implements QueueStorage<E> {
     // 并发控制
     private final StampedLock lock;
 
-    // ===== 空闲节点链表（Fix 1）=====
-    private long freeListHead;   // 空闲链表头（mmap 绝对地址，0 表示空）
-    private int freeListSize;    // 空闲链表中的节点数
+    // ===== 空闲节点 TreeMap（替代原 mmap 内链表，Fix 1 优化）=====
+    // key = allocatedTotal（节点大小），value = 该大小的节点地址栈
+    // 使用 TreeMap 的 ceilingEntry() 实现 O(log k) 查找（k 为不同大小桶的数量）。
+    // free list 从未持久化到快照，从 mmap 链表迁移至 Java 堆不影响崩溃恢复语义。
+    private final TreeMap<Integer, ArrayDeque<Long>> freeListBySize = new TreeMap<>();
+    private int freeListTotalCount = 0;  // 所有桶中节点总数，替代原 freeListSize
 
     // ===== 崩溃恢复快照（Fix 4）=====
     private final long snapshotAddress; // 快照写入地址（mmap 头部 Reserved 区），0 表示不支持
@@ -84,8 +90,6 @@ public class LinkedQueueStorage<E> implements QueueStorage<E> {
         this.lock = new StampedLock();
         this.snapshotAddress = snapshotAddress;
         this.baseAddress = baseAddress;
-        this.freeListHead = 0;
-        this.freeListSize = 0;
     }
 
     @Override
@@ -218,9 +222,9 @@ public class LinkedQueueStorage<E> implements QueueStorage<E> {
             headOffset = 0;
             tailOffset = 0;
             size.set(0);
-            // 重置空闲链表（节点内存已在 mmap 中，由 allocator 统一管理）
-            freeListHead = 0;
-            freeListSize = 0;
+            // 重置空闲 TreeMap
+            freeListBySize.clear();
+            freeListTotalCount = 0;
         } finally {
             lock.unlockWrite(stamp);
         }
@@ -236,59 +240,63 @@ public class LinkedQueueStorage<E> implements QueueStorage<E> {
         return STORAGE_TYPE;
     }
 
-    // ========== 空闲链表操作（Fix 1，必须在 writeLock 内调用）==========
+    // ========== 空闲节点 TreeMap 操作（Fix 1 优化，必须在 writeLock 内调用）==========
 
     /**
-     * 尝试从空闲链表分配节点。
-     * 遍历链表找第一个足够大的节点，O(n) 但受 MAX_FREE_LIST_SIZE 限制。
+     * 尝试从 TreeMap 分配节点。
+     * 使用 ceilingEntry(requiredTotal) 找到最小的足够大的节点，O(log k)。
      * 必须在 writeLock 内调用。
      *
      * @param requiredTotal 所需总字节数（NODE_HEADER_SIZE + elementSize）
-     * @return 节点地址，0 表示链表中无合适节点
+     * @return 节点地址，0 表示无合适节点
      */
     private long tryAllocateFromFreeList(int requiredTotal) {
-        long prev = 0;
-        long cur = freeListHead;
-        while (cur != 0) {
-            // ELEMENT_SIZE_POS 在空闲节点中存储 allocatedTotal
-            int storedTotal = UnsafeOps.getInt(cur + ELEMENT_SIZE_POS);
-            long next = UnsafeOps.getLong(cur + NEXT_OFFSET_POS);
-            if (storedTotal >= requiredTotal) {
-                // 从链表中摘出该节点
-                if (prev == 0) {
-                    freeListHead = next;
-                } else {
-                    UnsafeOps.putLong(prev + NEXT_OFFSET_POS, next);
-                }
-                freeListSize--;
-                return cur;
-            }
-            prev = cur;
-            cur = next;
+        Map.Entry<Integer, ArrayDeque<Long>> entry = freeListBySize.ceilingEntry(requiredTotal);
+        if (entry == null) {
+            return 0;
         }
-        return 0;
+        ArrayDeque<Long> deque = entry.getValue();
+        long nodeAddress = deque.pop();
+        freeListTotalCount--;
+        if (deque.isEmpty()) {
+            freeListBySize.remove(entry.getKey());
+        }
+        return nodeAddress;
     }
 
     /**
-     * 将已 poll 的节点加入空闲链表。
-     * 复用 NEXT_OFFSET_POS 存储链表指针，ELEMENT_SIZE_POS 存储分配总大小。
+     * 将已 poll 的节点加入 TreeMap 以备复用。
+     * 不再写入 mmap（节点内存保留原值，下次 offer 时会被覆盖）。
+     * 空闲节点总数仍限制在 MAX_FREE_LIST_SIZE 以内，超出时丢弃（可接受的小概率损耗）。
      * 必须在 writeLock 内调用。
      *
      * @param nodeAddress 要回收的节点地址
      * @param elementSize 该节点存储的元素字节数
      */
     private void returnToFreeList(long nodeAddress, int elementSize) {
-        if (freeListSize >= MAX_FREE_LIST_SIZE) {
-            // 空闲链表已满，丢弃（该节点内存无法回收，属于可接受的小概率损耗）
+        if (freeListTotalCount >= MAX_FREE_LIST_SIZE) {
             return;
         }
         int allocatedTotal = NODE_HEADER_SIZE + elementSize;
-        // 复用 ELEMENT_SIZE_POS 存储分配总大小
-        UnsafeOps.putInt(nodeAddress + ELEMENT_SIZE_POS, allocatedTotal);
-        // 复用 NEXT_OFFSET_POS 链接空闲链表
-        UnsafeOps.putLong(nodeAddress + NEXT_OFFSET_POS, freeListHead);
-        freeListHead = nodeAddress;
-        freeListSize++;
+        freeListBySize.computeIfAbsent(allocatedTotal, k -> new ArrayDeque<>()).push(nodeAddress);
+        freeListTotalCount++;
+    }
+
+    /**
+     * 返回当前 free list 中所有节点占用的字节总数。
+     * 这些字节可被 offer() 复用，不计入真正的碎片。
+     */
+    public long getFreeListBytes() {
+        long stamp = lock.readLock();
+        try {
+            long total = 0;
+            for (Map.Entry<Integer, ArrayDeque<Long>> e : freeListBySize.entrySet()) {
+                total += (long) e.getKey() * e.getValue().size();
+            }
+            return total;
+        } finally {
+            lock.unlockRead(stamp);
+        }
     }
 
     // ========== 崩溃恢复快照（Fix 4，必须在 writeLock 内调用）==========
@@ -315,17 +323,52 @@ public class LinkedQueueStorage<E> implements QueueStorage<E> {
     /**
      * 从快照恢复队列状态（崩溃恢复路径）。
      * 仅在 MmapFileHeader.getSnapshotValid() == 1 时调用。
+     * 对快照中的地址做合法性校验，损坏时抛出 IllegalStateException。
      */
     public void deserializeFromSnapshot() {
         long stamp = lock.writeLock();
         try {
-            long headRel = UnsafeOps.getLong(snapshotAddress);
-            headOffset = headRel == 0 ? 0 : (baseAddress + headRel);
+            long headRel  = UnsafeOps.getLong(snapshotAddress);          // offset 64
+            long tailRel  = UnsafeOps.getLong(snapshotAddress + 8);      // offset 72
+            int  snapSize = UnsafeOps.getInt(snapshotAddress + 16);      // offset 80
+            long allocOff = UnsafeOps.getLong(snapshotAddress + 24);     // offset 88
 
-            long tailRel = UnsafeOps.getLong(snapshotAddress + 8);
-            tailOffset = tailRel == 0 ? 0 : (baseAddress + tailRel);
+            // 校验 allocOffset：必须不小于 HEADER_SIZE
+            if (allocOff < MmapFileHeader.HEADER_SIZE) {
+                throw new IllegalStateException(
+                    "快照数据损坏：allocOffset=" + allocOff
+                    + " 小于 HEADER_SIZE=" + MmapFileHeader.HEADER_SIZE);
+            }
+            // 校验 size 非负
+            if (snapSize < 0) {
+                throw new IllegalStateException("快照数据损坏：size=" + snapSize + " 为负数");
+            }
+            // 校验 head/tail 与 size 的一致性
+            boolean headNull = (headRel == 0);
+            boolean tailNull = (tailRel == 0);
+            if (snapSize == 0 && (!headNull || !tailNull)) {
+                throw new IllegalStateException(
+                    "快照数据损坏：size=0 但 headRel=" + headRel + ", tailRel=" + tailRel);
+            }
+            if (snapSize > 0 && (headNull || tailNull)) {
+                throw new IllegalStateException(
+                    "快照数据损坏：size=" + snapSize + " 但指针为空，headRel=" + headRel + ", tailRel=" + tailRel);
+            }
+            // 校验地址范围：[HEADER_SIZE, allocOff - NODE_HEADER_SIZE]
+            long minValid = MmapFileHeader.HEADER_SIZE;
+            long maxValid = allocOff - NODE_HEADER_SIZE;
+            if (!headNull && (headRel < minValid || headRel > maxValid)) {
+                throw new IllegalStateException(
+                    "快照数据损坏：headRel=" + headRel + " 超出有效范围 [" + minValid + ", " + maxValid + "]");
+            }
+            if (!tailNull && (tailRel < minValid || tailRel > maxValid)) {
+                throw new IllegalStateException(
+                    "快照数据损坏：tailRel=" + tailRel + " 超出有效范围 [" + minValid + ", " + maxValid + "]");
+            }
 
-            this.size.set(UnsafeOps.getInt(snapshotAddress + 16));
+            headOffset = headNull ? 0 : (baseAddress + headRel);
+            tailOffset = tailNull ? 0 : (baseAddress + tailRel);
+            this.size.set(snapSize);
         } finally {
             lock.unlockWrite(stamp);
         }

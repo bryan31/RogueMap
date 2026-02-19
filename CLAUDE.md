@@ -29,6 +29,14 @@ mvn test -Dtest=*ComparisonTest
 # Run new queue tests (free list + crash recovery)
 mvn test -Dtest=LinkedQueueFreeListTest,QueueCrashRecoveryTest
 
+# Run new feature tests
+mvn test -Dtest=CompactionTest
+mvn test -Dtest=CheckpointRecoveryTest
+mvn test -Dtest=FailFastIteratorTest
+mvn test -Dtest=StorageMetricsTest
+mvn test -Dtest=AutoExpansionTest
+mvn test -Dtest=TransactionTest
+
 # Release build (GPG signing + publish to Maven Central)
 mvn clean deploy -P release
 ```
@@ -79,6 +87,43 @@ Memory-Mapped Files (persistent or temporary)
 - LinkedQueue: snapshots head/tail/size to header on every offer/poll for crash recovery
 - CircularQueue: recalculates count from headIdx/tailIdx on recovery
 
+### Operations & Maintenance
+
+**StorageMetrics** - Monitoring storage health:
+- `getMetrics()` returns fragmentation ratio, used/available bytes, entry count, dead bytes
+- `shouldCompact(threshold)` indicates when compaction is needed
+- All four data structures support this API
+
+**compact(allocSize)** - Space reclamation for persistent mode:
+- Creates new file with only live data, eliminating fragmentation
+- Returns new instance; old instance is closed
+- Supported by RogueMap, RogueList, RogueSet, RogueQueue(linked)
+- **Not supported**: temporary mode, CircularQueue
+
+**checkpoint()** - Explicit crash recovery point:
+- Forces index/metadata to disk for durable recovery
+- Use when you need guaranteed recoverability between close() calls
+- All four data structures support this in persistent mode
+
+**Fail-fast Iterators**:
+- RogueSet and RogueList iterators throw `ConcurrentModificationException` if collection is modified during iteration
+- Tracks modification count; detects structural changes (add/remove/clear)
+
+**Auto-Expansion** - Dynamic file growth for RogueMap (and other structures via builder):
+- `autoExpand(true)` in builder enables automatic file growth when space runs out
+- `expandFactor(double)` controls growth multiplier (default 2.0); `maxFileSize(long)` sets optional cap
+- Expansion only maps new region; existing segment base addresses are unchanged
+- Thread-safe: normal `allocate()` holds read lock (CAS), `expand()` holds exclusive write lock
+- `tryAllocate()` skips segment tail bytes to avoid cross-segment allocations (SIGSEGV prevention)
+- `saveMmapIndex()` uses `allocate()` for index placement; `getFileOffsetForAddress()` converts to file offset for header
+
+**Transactions** - Atomic multi-key operations for RogueMap:
+- `map.beginTransaction()` returns `Transaction<K,V>` (AutoCloseable)
+- `txn.put(key, val)` / `txn.remove(key)` buffer operations; `txn.commit()` applies atomically
+- `close()` without `commit()` auto-rolls back; `rollback()` also explicit
+- Isolation: Read Committed (reads see committed data, not own pending writes)
+- Deadlock prevention: locks acquired in ascending segment-index order
+
 ### Core Packages
 
 **index/** - Map indexing:
@@ -118,25 +163,29 @@ Memory-Mapped Files (persistent or temporary)
 2. **Segmented Locking** - 64 independent StampedLocks minimize contention
 3. **Linear Allocation** - CAS-based offset allocation, append-only (no free list)
 4. **Zero-Copy Primitives** - PrimitiveCodecs write directly to memory
+5. **Copy-on-Compact** - `compact()` creates new file with live data only (append-only creates fragmentation over time)
 
 ### Persistence Mechanism
 
-On `close()`, persistent mode saves:
+On `close()` or `checkpoint()`, persistent mode saves:
 1. Current data offset to file header
 2. Serialized index/metadata to end of file
 3. File header metadata (magic, version, data type, entry count)
 
-On reopening, builders detect existing files and restore state from disk.
+On reopening, builders detect existing files and restore state from disk. Use `checkpoint()` for explicit durability between close() calls.
 
 ### File Structure
 
 ```
 src/main/java/com/yomahub/roguemap/
-├── RogueMap.java              # Map class + MmapBuilder
+├── RogueMap.java              # Map class + MmapBuilder + Transaction inner class
 ├── RogueList.java             # Doubly-linked list
 ├── RogueSet.java              # Concurrent set
 ├── RogueQueue.java            # FIFO queue
+├── RogueMapTransaction.java   # Transaction implementation (commit/rollback)
+├── StorageMetrics.java        # Storage health metrics (fragmentation, usage)
 ├── index/                     # Map index implementations
+│   └── BatchEntry.java        # Transaction batch operation entry
 ├── list/                      # List index + iterator
 ├── set/                       # Set index + iterator
 ├── queue/                     # Queue storage implementations
@@ -152,7 +201,13 @@ src/test/java/com/yomahub/roguemap/
 ├── set/                       # Set tests
 ├── queue/                     # Queue tests
 ├── memory/                    # UnsafeOps tests
-└── serialization/             # Codec tests
+├── serialization/             # Codec tests
+├── CompactionTest.java        # Space reclamation tests
+├── CheckpointRecoveryTest.java # Crash recovery tests
+├── FailFastIteratorTest.java  # Iterator concurrent modification tests
+├── StorageMetricsTest.java    # Metrics API tests
+├── AutoExpansionTest.java     # Auto-expansion (7 tests)
+└── TransactionTest.java       # Transaction atomicity/isolation (12 tests)
 ```
 
 ## Important Notes
@@ -163,6 +218,10 @@ src/test/java/com/yomahub/roguemap/
 - **File Pre-allocation** - Mmap mode pre-allocates disk space via `allocateSize()`
 - **Close Ordering** - `storage.close()` internally calls `allocator.close()`. Never call `allocator.close()` separately after `storage.close()` (double-close bug)
 - **Optional Dependencies** - Kryo (`KryoObjectCodec`) and SLF4J are optional. Core library has zero mandatory dependencies
+- **Fragmentation** - Append-only allocator creates dead bytes on updates/deletes; use `getMetrics()` to monitor and `compact()` when fragmentation ratio > 0.5
+- **Auto-Expansion** - `autoExpand(true)` in builder allows file to grow; `tryAllocate()` skips segment tail bytes to avoid cross-boundary writes; use `getAddressForOffset()` / `getFileOffsetForAddress()` for safe multi-segment address translation
+- **Transaction** - `map.beginTransaction()` returns AutoCloseable `Transaction<K,V>`; commit() is atomic; close() without commit() auto-rolls back; deadlock prevented by always locking segments in ascending index order
+- **Iterator Safety** - Set/List iterators are fail-fast; do not modify collection during iteration
 
 ## Critical Implementation Details
 

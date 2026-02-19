@@ -4,8 +4,11 @@ import com.yomahub.roguemap.memory.UnsafeOps;
 import com.yomahub.roguemap.serialization.Codec;
 
 import java.util.concurrent.locks.StampedLock;
+import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
+import java.util.TreeMap;
 import java.util.concurrent.atomic.AtomicInteger;
 
 /**
@@ -182,6 +185,129 @@ public class SegmentedHashIndex<K> implements Index<K> {
     @Override
     public void close() {
         clear();
+    }
+
+    /**
+     * 将一批操作原子地应用到索引中（事务提交路径）。
+     *
+     * <p>调用方须保证：
+     * <ul>
+     *   <li>所有 PUT 操作的 newAddress 已在锁外预先分配并编码</li>
+     *   <li>operations 已按 segmentIndex 升序排序（防止死锁）</li>
+     * </ul>
+     *
+     * <p>若中途抛出异常，方法会尽力回滚已应用的操作并将旧值恢复到索引中。
+     *
+     * @param operations 有序（按 segmentIndex 升序）的操作列表
+     * @return 被替换/删除的旧值信息列表，与 operations 一一对应；
+     *         若该 key 原本不存在则对应条目的 wasPresent=false
+     */
+    public List<IndexUpdateResult> applyBatch(List<BatchEntry<K>> operations) {
+        if (operations == null || operations.isEmpty()) {
+            return new ArrayList<>();
+        }
+
+        // 按 segment 分组，并按 segment index 升序加写锁（防止死锁）
+        TreeMap<Integer, List<Integer>> segToOps = new TreeMap<>();
+        for (int i = 0; i < operations.size(); i++) {
+            BatchEntry<K> op = operations.get(i);
+            int segIdx = getSegmentIndex(op.key);
+            segToOps.computeIfAbsent(segIdx, k -> new ArrayList<>()).add(i);
+        }
+
+        // 结果列表（按 operations 顺序）
+        IndexUpdateResult[] results = new IndexUpdateResult[operations.size()];
+
+        // 按升序逐段加写锁并应用操作
+        List<Integer> acquiredSegments = new ArrayList<>(segToOps.size());
+        List<long[]> stamps = new ArrayList<>(segToOps.size()); // [0]=segIdx, [1]=stamp
+        int appliedCount = 0; // 已成功应用的操作数，用于补偿回滚
+
+        try {
+            for (Map.Entry<Integer, List<Integer>> entry : segToOps.entrySet()) {
+                int segIdx = entry.getKey();
+                Segment<K> seg = segments[segIdx];
+                long stamp = seg.lock.writeLock();
+                acquiredSegments.add(segIdx);
+                stamps.add(new long[]{segIdx, stamp});
+
+                for (int opIdx : entry.getValue()) {
+                    BatchEntry<K> op = operations.get(opIdx);
+                    IndexUpdateResult result;
+                    if (op.opType == BatchEntry.OpType.PUT) {
+                        Entry oldEntry = seg.map.put(op.key, new Entry(op.newAddress, op.newSize));
+                        if (oldEntry != null) {
+                            result = IndexUpdateResult.withOldValue(oldEntry.address, oldEntry.size);
+                        } else {
+                            result = IndexUpdateResult.noOldValue();
+                            size.incrementAndGet();
+                        }
+                    } else { // REMOVE
+                        Entry oldEntry = seg.map.remove(op.key);
+                        if (oldEntry != null) {
+                            result = IndexUpdateResult.withOldValue(oldEntry.address, oldEntry.size);
+                            size.decrementAndGet();
+                        } else {
+                            result = IndexUpdateResult.noOldValue();
+                        }
+                    }
+                    results[opIdx] = result;
+                    appliedCount++;
+                }
+            }
+        } catch (Exception e) {
+            // 补偿：逆序回滚已应用的操作（当前已加锁的 segment 内）
+            // 注意：此分支极少触发（HashMap.put 本身不抛异常），此处仅作防御性处理
+            rollbackApplied(operations, results, appliedCount);
+            throw new RuntimeException("事务提交失败，已回滚", e);
+        } finally {
+            // 释放所有写锁
+            int stampIdx = 0;
+            for (Integer segIdx : acquiredSegments) {
+                Segment<K> seg = segments[segIdx];
+                long stamp = stamps.get(stampIdx)[1];
+                seg.lock.unlockWrite(stamp);
+                stampIdx++;
+            }
+        }
+
+        return new ArrayList<>(java.util.Arrays.asList(results));
+    }
+
+    /**
+     * 补偿回滚：将已应用的 appliedCount 条操作逆向恢复。
+     * 注意：此方法在 finally 之前调用，不能再持有段锁（锁在外层释放）。
+     * 由于此路径极少触发，此处采用简单的串行加锁逐条撤销策略。
+     */
+    private void rollbackApplied(List<BatchEntry<K>> operations, IndexUpdateResult[] results, int appliedCount) {
+        for (int i = appliedCount - 1; i >= 0; i--) {
+            BatchEntry<K> op = operations.get(i);
+            IndexUpdateResult result = results[i];
+            if (result == null) continue;
+            int segIdx = getSegmentIndex(op.key);
+            Segment<K> seg = segments[segIdx];
+            long stamp = seg.lock.writeLock();
+            try {
+                if (op.opType == BatchEntry.OpType.PUT) {
+                    if (result.wasPresent) {
+                        // 还原旧值
+                        seg.map.put(op.key, new Entry(result.oldAddress, result.oldSize));
+                    } else {
+                        // 新增的，撤销
+                        seg.map.remove(op.key);
+                        size.decrementAndGet();
+                    }
+                } else { // REMOVE
+                    if (result.wasPresent) {
+                        // 还原被删除的值
+                        seg.map.put(op.key, new Entry(result.oldAddress, result.oldSize));
+                        size.incrementAndGet();
+                    }
+                }
+            } finally {
+                seg.lock.unlockWrite(stamp);
+            }
+        }
     }
 
     @Override
@@ -713,9 +839,9 @@ public class SegmentedHashIndex<K> implements Index<K> {
     }
 
     /**
-     * 根据键计算应该属于哪个段
+     * 根据键计算应该属于哪个段（public 供事务使用，按 segmentIndex 升序排锁）
      */
-    private int getSegmentIndex(K key) {
+    public int getSegmentIndex(K key) {
         int hash = key.hashCode();
         return hash & segmentMask;
     }

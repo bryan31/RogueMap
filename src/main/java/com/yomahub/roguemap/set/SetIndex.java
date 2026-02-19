@@ -24,6 +24,7 @@ public class SetIndex<E> {
     private final int segmentMask;
     private final AtomicInteger size;
     private final Codec<E> elementCodec;
+    private volatile int modCount = 0;
 
     @SuppressWarnings("unchecked")
     public SetIndex(Codec<E> elementCodec) {
@@ -64,6 +65,7 @@ public class SetIndex<E> {
 
         if (result.isNewlyAdded()) {
             size.incrementAndGet();
+            modCount++;
         }
 
         return result;
@@ -120,6 +122,7 @@ public class SetIndex<E> {
 
         if (result.wasPresent()) {
             size.decrementAndGet();
+            modCount++;
         }
 
         return result;
@@ -156,6 +159,13 @@ public class SetIndex<E> {
     }
 
     /**
+     * 获取修改计数（用于迭代器 fail-fast 检测）
+     */
+    public int getModCount() {
+        return modCount;
+    }
+
+    /**
      * 获取元素数量
      */
     public int size() {
@@ -177,6 +187,7 @@ public class SetIndex<E> {
             segment.clear();
         }
         size.set(0);
+        modCount++;
     }
 
     /**

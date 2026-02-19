@@ -7,7 +7,7 @@
 
 [![License](https://img.shields.io/badge/license-Apache%202-blue.svg)](LICENSE)
 [![Java](https://img.shields.io/badge/Java-8%2B-orange.svg)](https://www.oracle.com/java/)
-[![Version](https://img.shields.io/badge/version-1.0.0--BETA2-green.svg)](https://github.com/bryan31/RogueMap)
+[![Version](https://img.shields.io/badge/version-1.0.0-green.svg)](https://github.com/bryan31/RogueMap)
 
 </div>
 
@@ -69,6 +69,8 @@ RogueMap 将数据存储在 **内存映射文件** 中，让你享受简单 API�
 - ✅ **多种存储模式** - 支持 内存映射文件持久化、内存映射临时文件 两种模式
 - ✅ **持久化支持** - Mmap 模式支持数据持久化到磁盘，支持自动恢复
 - ✅ **临时文件模式** - 支持自动清理的临时文件存储
+- ✅ **自动扩容** - 文件写满自动增长（`autoExpand`），无需预估容量，已有数据地址不受影响
+- ✅ **事务支持** - 多操作原子提交（`beginTransaction`），失败自动回滚，支持 try-with-resources
 - ✅ **零拷贝序列化** - 原始类型直接内存布局，无序列化开销
 - ✅ **高并发支持** - 分段锁设计（64 个段），StampedLock 乐观锁优化
 - ✅ **多种索引结构** - 支持 HashIndex、SegmentedHashIndex、LongPrimitiveIndex、IntPrimitiveIndex
@@ -155,6 +157,71 @@ RogueMap<String, Integer> simpleMap = RogueMap.<String, Integer>mmap()
     .basicIndex()
     .build();
 ```
+
+#### 自动扩容
+
+无需预估文件大小，写满后自动增长：
+
+```java
+RogueMap<String, Long> map = RogueMap.<String, Long>mmap()
+    .persistent("data/scores.db")
+    .allocateSize(64 * 1024 * 1024L)  // 初始 64MB，不够时自动扩容
+    .autoExpand(true)                  // 开启自动扩容
+    .expandFactor(2.0)                 // 每次扩容为原来的 2 倍（默认）
+    // .maxFileSize(10L * 1024 * 1024 * 1024)  // 可选：设置最大文件大小上限
+    .keyCodec(new StringCodec())
+    .valueCodec(PrimitiveCodecs.LONG)
+    .build();
+
+// 正常写入，无需关心容量
+for (int i = 0; i < 10_000_000; i++) {
+    map.put("key-" + i, (long) i);  // 文件满时自动扩容，已有数据地址不变
+}
+```
+
+**自动扩容特性**：
+- 扩容时仅对新增区域创建映射，已有数据的物理地址完全不变
+- 线程安全：普通写入持读锁（无锁 CAS），扩容时独占写锁，扩容完成后其他线程继续正常写入
+- 扩容后文件大小可通过 `map.getMetrics().getTotalFileSize()` 查看
+- 不开启 `autoExpand` 时空间耗尽会抛出 `OutOfMemoryError`（默认行为，便于发现配置问题）
+
+#### 事务支持
+
+对多个 key 的操作保证原子性，要么全部成功，要么全部回滚：
+
+```java
+// 正常提交
+try (RogueMap.Transaction<String, Long> txn = map.beginTransaction()) {
+    txn.put("alice", 100L);
+    txn.put("bob", 200L);
+    txn.remove("charlie");
+    txn.commit();  // 原子提交：三个操作同时生效
+}  // 未调用 commit() 时，close() 自动回滚
+
+// 异常时自动回滚
+try (RogueMap.Transaction<String, Long> txn = map.beginTransaction()) {
+    txn.put("alice", 999L);
+    txn.put("bob", 888L);
+    if (someCondition) {
+        // 不调用 commit()，close() 时自动回滚，alice 和 bob 的值保持不变
+        return;
+    }
+    txn.commit();
+}
+
+// 手动回滚
+try (RogueMap.Transaction<String, Long> txn = map.beginTransaction()) {
+    txn.put("key1", 1L);
+    txn.put("key2", 2L);
+    txn.rollback();  // 显式回滚
+}
+```
+
+**事务特性**：
+- **原子性**：commit() 使用分段排序加锁，所有写入原子生效
+- **隔离级别**：Read Committed — 事务内读取的是已提交数据，看不到其他未提交事务的写入
+- **死锁预防**：始终按 segment index 升序加锁，杜绝死锁
+- **支持同 key 多次写入**：以最后一次 put 为准；put 后 remove 则最终不存在
 
 ### RogueList - 双向链表
 
@@ -445,7 +512,8 @@ Memory-Mapped Files
 
 - **特点**: 使用 MappedByteBuffer 将文件映射到内存
 - **大文件支持**: 单个分段最大 2GB，自动分多段处理
-- **并发安全**: CAS 操作分配偏移量
+- **自动扩容**: `autoExpand=true` 时空间不足自动扩展文件，新增区域创建新 segment，已有 segment 地址不变
+- **并发安全**: CAS 操作分配偏移量；扩容时使用 ReadWriteLock（普通分配持读锁，扩容独占写锁）
 - **双模式**: 支持持久化和临时文件
 
 ### 高并发支持
@@ -512,9 +580,11 @@ mvn test -Dtest=QueueFunctionalTest
    }
    ```
 
-3. **文件大小** - Mmap 模式的 `allocateSize()` 会立即占用磁盘空间，请根据实际需求设置
+3. **文件大小** - Mmap 模式的 `allocateSize()` 会立即占用磁盘空间，请根据实际需求设置；如果不确定容量，建议开启 `autoExpand(true)` 让文件按需增长
 
 4. **并发安全** - 所有数据结构都是线程安全的，支持高并发读写
+
+5. **事务注意事项** - 事务目前仅支持 `RogueMap`；commit 后调用 `checkpoint()` 可确保崩溃也能恢复
 
 ## 🤝 贡献
 

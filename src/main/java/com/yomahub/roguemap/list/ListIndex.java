@@ -27,6 +27,7 @@ public class ListIndex {
     private volatile long headOffset;   // 头节点偏移量（0表示空）
     private volatile long tailOffset;   // 尾节点偏移量（0表示空）
     private final AtomicInteger size;   // 元素数量
+    private volatile int modCount = 0;  // 修改计数（用于迭代器 fail-fast）
 
     // 位置索引数组（用于O(1)随机访问）
     private long[] positionIndex;
@@ -75,6 +76,7 @@ public class ListIndex {
             positionIndex[0] = newOffset;
 
             size.incrementAndGet();
+            modCount++;
         } finally {
             lock.unlockWrite(stamp);
         }
@@ -107,6 +109,7 @@ public class ListIndex {
             positionIndex[currentSize] = newOffset;
 
             size.incrementAndGet();
+            modCount++;
         } finally {
             lock.unlockWrite(stamp);
         }
@@ -144,6 +147,7 @@ public class ListIndex {
             shiftIndexForHeadRemove();
 
             size.decrementAndGet();
+            modCount++;
             return oldHead;
         } finally {
             lock.unlockWrite(stamp);
@@ -182,6 +186,7 @@ public class ListIndex {
             }
 
             size.decrementAndGet();
+            modCount++;
             return oldTail;
         } finally {
             lock.unlockWrite(stamp);
@@ -254,6 +259,7 @@ public class ListIndex {
             headOffset = 0;
             tailOffset = 0;
             size.set(0);
+            modCount++;
 
             // 清空位置索引
             for (int i = 0; i < indexCapacity; i++) {
@@ -262,6 +268,13 @@ public class ListIndex {
         } finally {
             lock.unlockWrite(stamp);
         }
+    }
+
+    /**
+     * 获取修改计数（用于迭代器 fail-fast 检测）
+     */
+    public int getModCount() {
+        return modCount;
     }
 
     // ========== 节点操作方法（直接操作内存） ==========
