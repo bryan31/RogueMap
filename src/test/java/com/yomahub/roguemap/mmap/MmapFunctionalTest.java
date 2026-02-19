@@ -721,6 +721,280 @@ public class MmapFunctionalTest {
         return sb.toString();
     }
 
+    // ========== forEach 遍历测试 ==========
+
+    @Test
+    public void testForEachBasic() {
+        RogueMap<String, String> map = RogueMap.<String, String>mmap()
+                .persistent(TEST_FILE)
+                .allocateSize(10 * 1024 * 1024L)
+                .keyCodec(new StringCodec())
+                .valueCodec(new StringCodec())
+                .build();
+
+        // 添加数据
+        map.put("key1", "value1");
+        map.put("key2", "value2");
+        map.put("key3", "value3");
+
+        // 使用 forEach 遍历并收集结果
+        java.util.Map<String, String> collected = new java.util.HashMap<>();
+        map.forEach((k, v) -> collected.put(k, v));
+
+        // 验证
+        assertEquals(3, collected.size());
+        assertEquals("value1", collected.get("key1"));
+        assertEquals("value2", collected.get("key2"));
+        assertEquals("value3", collected.get("key3"));
+
+        map.close();
+    }
+
+    @Test
+    public void testForEachEmptyMap() {
+        RogueMap<String, String> map = RogueMap.<String, String>mmap()
+                .persistent(TEST_FILE)
+                .allocateSize(10 * 1024 * 1024L)
+                .keyCodec(new StringCodec())
+                .valueCodec(new StringCodec())
+                .build();
+
+        // 空 map 遍历
+        final int[] count = {0};
+        map.forEach((k, v) -> count[0]++);
+
+        assertEquals(0, count[0]);
+        map.close();
+    }
+
+    @Test
+    public void testForEachWithLongKeyValue() {
+        String testFile = "target/test-mmap-foreach-long.db";
+
+        try {
+            RogueMap<Long, Long> map = RogueMap.<Long, Long>mmap()
+                    .persistent(testFile)
+                    .allocateSize(10 * 1024 * 1024L)
+                    .keyCodec(PrimitiveCodecs.LONG)
+                    .valueCodec(PrimitiveCodecs.LONG)
+                    .build();
+
+            // 添加数据
+            for (long i = 0; i < 100; i++) {
+                map.put(i, i * 10);
+            }
+
+            // 遍历并验证
+            java.util.Map<Long, Long> collected = new java.util.HashMap<>();
+            map.forEach((k, v) -> collected.put(k, v));
+
+            assertEquals(100, collected.size());
+            for (long i = 0; i < 100; i++) {
+                assertEquals(i * 10, collected.get(i));
+            }
+
+            map.close();
+        } finally {
+            new File(testFile).delete();
+        }
+    }
+
+    @Test
+    public void testForEachAfterPersistence() {
+        // 第一阶段：写入数据
+        RogueMap<String, String> map1 = RogueMap.<String, String>mmap()
+                .persistent(TEST_FILE)
+                .allocateSize(10 * 1024 * 1024L)
+                .keyCodec(new StringCodec())
+                .valueCodec(new StringCodec())
+                .build();
+
+        map1.put("a", "1");
+        map1.put("b", "2");
+        map1.put("c", "3");
+        map1.close();
+
+        // 第二阶段：重新打开并遍历
+        RogueMap<String, String> map2 = RogueMap.<String, String>mmap()
+                .persistent(TEST_FILE)
+                .allocateSize(10 * 1024 * 1024L)
+                .keyCodec(new StringCodec())
+                .valueCodec(new StringCodec())
+                .build();
+
+        java.util.Set<String> keys = new java.util.HashSet<>();
+        java.util.Set<String> values = new java.util.HashSet<>();
+        map2.forEach((k, v) -> {
+            keys.add(k);
+            values.add(v);
+        });
+
+        assertEquals(3, keys.size());
+        assertTrue(keys.contains("a"));
+        assertTrue(keys.contains("b"));
+        assertTrue(keys.contains("c"));
+        assertTrue(values.contains("1"));
+        assertTrue(values.contains("2"));
+        assertTrue(values.contains("3"));
+
+        map2.close();
+    }
+
+    @Test
+    public void testForEachWithLargeData() {
+        RogueMap<String, String> map = RogueMap.<String, String>mmap()
+                .persistent(TEST_FILE)
+                .allocateSize(50 * 1024 * 1024L)
+                .keyCodec(new StringCodec())
+                .valueCodec(new StringCodec())
+                .build();
+
+        int count = 1000;
+        for (int i = 0; i < count; i++) {
+            map.put("key" + i, "value" + i);
+        }
+
+        // 遍历并计数
+        final int[] iterCount = {0};
+        map.forEach((k, v) -> {
+            iterCount[0]++;
+            assertTrue(k.startsWith("key"));
+            assertTrue(v.startsWith("value"));
+        });
+
+        assertEquals(count, iterCount[0]);
+        map.close();
+    }
+
+    @Test
+    public void testForEachWithObjectValue() {
+        String testFile = "target/test-mmap-foreach-object.db";
+
+        try {
+            RogueMap<String, TestUser> map = RogueMap.<String, TestUser>mmap()
+                    .persistent(testFile)
+                    .allocateSize(10 * 1024 * 1024L)
+                    .keyCodec(new StringCodec())
+                    .valueCodec(KryoObjectCodec.create(TestUser.class))
+                    .build();
+
+            map.put("user1", new TestUser(1L, "Alice", 25));
+            map.put("user2", new TestUser(2L, "Bob", 30));
+
+            // 遍历并验证
+            java.util.Map<String, TestUser> collected = new java.util.HashMap<>();
+            map.forEach((k, v) -> collected.put(k, v));
+
+            assertEquals(2, collected.size());
+            assertEquals(1L, collected.get("user1").getId());
+            assertEquals("Alice", collected.get("user1").getName());
+            assertEquals(2L, collected.get("user2").getId());
+            assertEquals("Bob", collected.get("user2").getName());
+
+            map.close();
+        } finally {
+            new File(testFile).delete();
+        }
+    }
+
+    @Test
+    public void testForEachWithDifferentIndexTypes() {
+        // 测试 basicIndex
+        String testFile1 = "target/test-mmap-foreach-basic.db";
+        try {
+            RogueMap<String, String> basicMap = RogueMap.<String, String>mmap()
+                    .persistent(testFile1)
+                    .allocateSize(10 * 1024 * 1024L)
+                    .basicIndex()
+                    .keyCodec(new StringCodec())
+                    .valueCodec(new StringCodec())
+                    .build();
+
+            basicMap.put("k1", "v1");
+            basicMap.put("k2", "v2");
+
+            final int[] count = {0};
+            basicMap.forEach((k, v) -> count[0]++);
+            assertEquals(2, count[0]);
+
+            basicMap.close();
+        } finally {
+            new File(testFile1).delete();
+        }
+
+        // 测试 segmentedIndex
+        String testFile2 = "target/test-mmap-foreach-segmented.db";
+        try {
+            RogueMap<String, String> segmentedMap = RogueMap.<String, String>mmap()
+                    .persistent(testFile2)
+                    .allocateSize(10 * 1024 * 1024L)
+                    .segmentedIndex(32)
+                    .keyCodec(new StringCodec())
+                    .valueCodec(new StringCodec())
+                    .build();
+
+            segmentedMap.put("k1", "v1");
+            segmentedMap.put("k2", "v2");
+
+            final int[] count = {0};
+            segmentedMap.forEach((k, v) -> count[0]++);
+            assertEquals(2, count[0]);
+
+            segmentedMap.close();
+        } finally {
+            new File(testFile2).delete();
+        }
+    }
+
+    @Test
+    public void testForEachNullAction() {
+        RogueMap<String, String> map = RogueMap.<String, String>mmap()
+                .persistent(TEST_FILE)
+                .allocateSize(10 * 1024 * 1024L)
+                .keyCodec(new StringCodec())
+                .valueCodec(new StringCodec())
+                .build();
+
+        map.put("key", "value");
+
+        // 传入 null action 应该抛出异常
+        assertThrows(IllegalArgumentException.class, () -> map.forEach(null));
+
+        map.close();
+    }
+
+    @Test
+    public void testForEachWithPrimitiveIndex() {
+        String testFile = "target/test-mmap-foreach-primitive.db";
+
+        try {
+            // 测试 LongPrimitiveIndex
+            RogueMap<Long, String> longKeyMap = RogueMap.<Long, String>mmap()
+                    .persistent(testFile)
+                    .allocateSize(10 * 1024 * 1024L)
+                    .primitiveIndex()
+                    .keyCodec(PrimitiveCodecs.LONG)
+                    .valueCodec(new StringCodec())
+                    .build();
+
+            longKeyMap.put(1L, "one");
+            longKeyMap.put(2L, "two");
+            longKeyMap.put(3L, "three");
+
+            java.util.Map<Long, String> collected = new java.util.HashMap<>();
+            longKeyMap.forEach((k, v) -> collected.put(k, v));
+
+            assertEquals(3, collected.size());
+            assertEquals("one", collected.get(1L));
+            assertEquals("two", collected.get(2L));
+            assertEquals("three", collected.get(3L));
+
+            longKeyMap.close();
+        } finally {
+            new File(testFile).delete();
+        }
+    }
+
     /**
      * 测试用户对象
      */

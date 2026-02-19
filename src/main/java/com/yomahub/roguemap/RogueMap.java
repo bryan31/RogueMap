@@ -17,6 +17,7 @@ import com.yomahub.roguemap.storage.MmapStorage;
 import com.yomahub.roguemap.storage.StorageEngine;
 
 import java.io.File;
+import java.util.function.BiConsumer;
 
 /**
  * RogueMap - 高性能堆外键值存储
@@ -163,6 +164,35 @@ public class RogueMap<K, V> implements AutoCloseable {
      */
     public boolean isEmpty() {
         return size() == 0;
+    }
+
+    /**
+     * 遍历所有键值对
+     *
+     * <p>对 map 中的每个键值对执行给定的操作。遍历期间不应该修改 map
+     * （添加、更新或删除条目），否则可能导致不确定的行为。
+     *
+     * <p>注意：遍历过程中会对每个值进行反序列化，对于大量数据可能较慢。
+     *
+     * <p>示例：
+     * <pre>{@code
+     * map.forEach((key, value) -> {
+     *     System.out.println(key + " = " + value);
+     * });
+     * }</pre>
+     *
+     * @param action 对每个键值对执行的操作，不能为 null
+     */
+    @SuppressWarnings("unchecked")
+    public void forEach(BiConsumer<K, V> action) {
+        if (action == null) {
+            throw new IllegalArgumentException("action 不能为 null");
+        }
+
+        index.forEach((key, address, size) -> {
+            V value = valueCodec.decode(address);
+            action.accept((K) key, value);
+        });
     }
 
     /**
