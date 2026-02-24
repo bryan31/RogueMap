@@ -9,36 +9,36 @@
 [![Java](https://img.shields.io/badge/Java-8%2B-orange.svg)](https://www.oracle.com/java/)
 [![Maven Central](https://img.shields.io/maven-central/v/com.yomahub/roguemap.svg)](https://central.sonatype.com/artifact/com.yomahub/roguemap)
 
-[简体中文](README.zh-CN.md) | English
+简体中文 | [English](README.md)
 
 </div>
 
-**RogueMap** is a high-performance embedded storage engine that breaks through the JVM memory wall. Based on memory-mapped files, it provides four data structures: **RogueMap** (key-value store), **RogueList** (doubly-linked list), **RogueSet** (concurrent set), and **RogueQueue** (FIFO queue).
+**RogueMap** 是一个高性能的嵌入式存储引擎库，突破 JVM 内存墙。基于内存映射文件，提供四种数据结构：**RogueMap**（键值存储）、**RogueList**（双向链表）、**RogueSet**（并发集合）、**RogueQueue**（FIFO 队列）。
 
-## Why RogueMap?
+## 为什么选择 RogueMap？
 
-| Feature | Traditional Collections | RogueMap |
-|---------|------------------------|----------|
-| **Capacity** | Limited by heap size | **Unlimited**, TB-scale |
-| **Heap Memory** | 100% | **Only 15.3%** |
-| **GC Impact** | Severe (Full GC pauses) | **Minimal** |
-| **Persistence** | Not supported | **Supported** |
-| **Transactions** | Not supported | **Atomic multi-key ops** |
+| 特性 | 传统集合 | RogueMap |
+|------|---------|----------|
+| **数据容量** | 受限于堆大小 | **无限制**，可达 TB 级 |
+| **堆内存占用** | 100% | **仅 15.3%** |
+| **GC 影响** | 严重（Full GC 停顿） | **几乎无影响** |
+| **持久化** | 不支持 | **支持** |
+| **事务** | 不支持 | **原子多键操作** |
 
-## Features
+## 特性
 
-- **4 Data Structures** - RogueMap, RogueList, RogueSet, RogueQueue
-- **Persistence** - Data survives process restarts
-- **Auto-Expansion** - Files grow automatically when full
-- **Transactions** - Atomic multi-key operations with Read Committed isolation
-- **Crash Recovery** - CRC32 checksum + generation counter + dirty flag
-- **Zero-Copy Serialization** - Direct memory layout for primitives
-- **High Concurrency** - 64-segment locking with StampedLock
-- **Zero Dependencies** - Core library has no mandatory dependencies
+- **四种数据结构** - RogueMap、RogueList、RogueSet、RogueQueue
+- **持久化支持** - 进程重启后数据自动恢复
+- **自动扩容** - 文件写满自动增长
+- **事务支持** - 原子多键操作，Read Committed 隔离级别
+- **崩溃恢复** - CRC32 校验 + 写入代数 + 脏标志
+- **零拷贝序列化** - 原始类型直接内存布局
+- **高并发支持** - 64 段分段锁，StampedLock 乐观读
+- **零依赖** - 核心库无第三方依赖
 
-## Quick Start
+## 快速开始
 
-### Maven
+### Maven 依赖
 
 ```xml
 <dependency>
@@ -48,10 +48,10 @@
 </dependency>
 ```
 
-### RogueMap - Key-Value Store
+### RogueMap - 键值存储
 
 ```java
-// Temporary mode (auto-deleted on JVM exit)
+// 临时文件模式（JVM 关闭后自动删除）
 RogueMap<String, Long> map = RogueMap.<String, Long>mmap()
     .temporary()
     .allocateSize(64 * 1024 * 1024L)
@@ -62,7 +62,7 @@ RogueMap<String, Long> map = RogueMap.<String, Long>mmap()
 map.put("alice", 100L);
 map.get("alice");  // 100L
 
-// Persistent mode with auto-expansion
+// 持久化模式 + 自动扩容
 RogueMap<String, Long> persistentMap = RogueMap.<String, Long>mmap()
     .persistent("data/mydata.db")
     .autoExpand(true)
@@ -70,41 +70,41 @@ RogueMap<String, Long> persistentMap = RogueMap.<String, Long>mmap()
     .valueCodec(PrimitiveCodecs.LONG)
     .build();
 
-// Transaction
+// 事务
 try (RogueMap.Transaction<String, Long> txn = map.beginTransaction()) {
     txn.put("key1", 1L);
     txn.put("key2", 2L);
-    txn.commit();  // Atomic commit
+    txn.commit();  // 原子提交
 }
 
-// Iterate over all entries
+// 遍历所有键值对
 map.forEach((key, value) -> System.out.println(key + " = " + value));
 ```
 
-### RogueList - Doubly-Linked List
+### RogueList - 双向链表
 
 ```java
-// Temporary mode
+// 临时文件模式
 RogueList<String> list = RogueList.<String>mmap()
     .temporary()
     .elementCodec(StringCodec.INSTANCE)
     .build();
 
-list.addLast("hello");   // O(1) - recommended
+list.addLast("hello");   // O(1) - 推荐
 list.addLast("world");
-list.get(0);             // "hello" - O(1) random access
+list.get(0);             // "hello" - O(1) 随机访问
 
-// Persistent mode
+// 持久化模式
 RogueList<Long> persistentList = RogueList.<Long>mmap()
     .persistent("data/mylist.db")
     .elementCodec(PrimitiveCodecs.LONG)
     .build();
 ```
 
-### RogueSet - Concurrent Set
+### RogueSet - 并发集合
 
 ```java
-// Temporary mode
+// 临时文件模式
 RogueSet<String> set = RogueSet.<String>mmap()
     .temporary()
     .elementCodec(StringCodec.INSTANCE)
@@ -114,17 +114,17 @@ set.add("apple");        // true
 set.contains("apple");   // true
 set.remove("apple");     // true
 
-// Persistent mode
+// 持久化模式
 RogueSet<Long> persistentSet = RogueSet.<Long>mmap()
     .persistent("data/myset.db")
     .elementCodec(PrimitiveCodecs.LONG)
     .build();
 ```
 
-### RogueQueue - FIFO Queue
+### RogueQueue - FIFO 队列
 
 ```java
-// Linked mode (unbounded)
+// 链表模式（无界）
 RogueQueue<String> queue = RogueQueue.<String>mmap()
     .temporary()
     .linked()
@@ -134,31 +134,31 @@ RogueQueue<String> queue = RogueQueue.<String>mmap()
 queue.offer("task1");
 queue.poll();            // "task1"
 
-// Circular mode (bounded)
+// 环形缓冲区模式（有界）
 RogueQueue<Long> circular = RogueQueue.<Long>mmap()
     .persistent("data/queue.db")
-    .circular(1024, 64)  // capacity=1024, max element size=64 bytes
+    .circular(1024, 64)  // 容量=1024，最大元素=64字节
     .elementCodec(PrimitiveCodecs.LONG)
     .build();
 ```
 
-## Supported Data Types
+## 支持的数据类型
 
-**Primitives** (zero-copy): `Long`, `Integer`, `Double`, `Float`, `Short`, `Byte`, `Boolean`
+**原始类型**（零拷贝）：`Long`、`Integer`、`Double`、`Float`、`Short`、`Byte`、`Boolean`
 
-**String**: `StringCodec.INSTANCE`
+**字符串**：`StringCodec.INSTANCE`
 
-**Objects**: `KryoObjectCodec.create(YourClass.class)` (optional dependency)
+**对象**：`KryoObjectCodec.create(YourClass.class)`（可选依赖）
 
-## Documentation
+## 文档
 
-For complete documentation, performance benchmarks, and advanced usage, please visit the official website.
+完整文档、性能测试报告和高级用法，请访问官网。
 
-## Requirements
+## 系统要求
 
 - Java 8+
 - Maven 3.6+
 
-## License
+## 许可证
 
 [Apache License 2.0](LICENSE)

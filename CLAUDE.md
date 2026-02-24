@@ -29,13 +29,14 @@ mvn test -Dtest=*ComparisonTest
 # Run new queue tests (free list + crash recovery)
 mvn test -Dtest=LinkedQueueFreeListTest,QueueCrashRecoveryTest
 
-# Run new feature tests
+# Run feature-specific tests
 mvn test -Dtest=CompactionTest
 mvn test -Dtest=CheckpointRecoveryTest
 mvn test -Dtest=FailFastIteratorTest
 mvn test -Dtest=StorageMetricsTest
 mvn test -Dtest=AutoExpansionTest
 mvn test -Dtest=TransactionTest
+mvn test -Dtest=MmapFunctionalTest  # includes forEach tests
 
 # Release build (GPG signing + publish to Maven Central)
 mvn clean deploy -P release
@@ -67,6 +68,7 @@ Memory-Mapped Files (persistent or temporary)
 - `RogueMap.mmap().temporary()` - Temporary file mode (auto-deleted on JVM exit)
 - `RogueMap.mmap().persistent(path)` - Persistent file mode (data survives restart)
 - Index options: `basicIndex()`, `segmentedIndex(64)`, `primitiveIndex()`
+- `forEach(BiConsumer<K,V>)` - Iterate over all key-value pairs
 
 **RogueList<E>** - Doubly-linked list with O(1) random access:
 - Maintains position index array for fast random access via `get(index)`
@@ -206,8 +208,8 @@ src/test/java/com/yomahub/roguemap/
 ├── CheckpointRecoveryTest.java # Crash recovery tests
 ├── FailFastIteratorTest.java  # Iterator concurrent modification tests
 ├── StorageMetricsTest.java    # Metrics API tests
-├── AutoExpansionTest.java     # Auto-expansion (7 tests)
-└── TransactionTest.java       # Transaction atomicity/isolation (12 tests)
+├── AutoExpansionTest.java     # Auto-expansion tests
+└── TransactionTest.java       # Transaction atomicity/isolation tests
 ```
 
 ## Important Notes
