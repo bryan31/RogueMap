@@ -1,6 +1,7 @@
 package com.yomahub.roguemap.set;
 
 import com.yomahub.roguemap.index.IndexEntryConsumer;
+import com.yomahub.roguemap.memory.MmapAllocator;
 import com.yomahub.roguemap.memory.UnsafeOps;
 import com.yomahub.roguemap.serialization.Codec;
 
@@ -269,6 +270,52 @@ public class SetIndex<E> {
     }
 
     /**
+     * 序列化到内存地址（使用文件偏移，支持多段映射文件）
+     */
+    public int serializeWithFileOffsets(long address, MmapAllocator mmapAllocator) {
+        long currentAddr = address;
+
+        UnsafeOps.putInt(currentAddr, segments.length);
+        currentAddr += 4;
+
+        UnsafeOps.putInt(currentAddr, 0);
+        currentAddr += 4;
+
+        int totalEntries = 0;
+        for (Segment<E> segment : segments) {
+            long stamp = segment.lock.readLock();
+            try {
+                for (Map.Entry<E, Entry> entry : segment.map.entrySet()) {
+                    E element = entry.getKey();
+                    Entry value = entry.getValue();
+
+                    int elementSize = elementCodec.calculateSize(element);
+                    UnsafeOps.putInt(currentAddr, elementSize);
+                    currentAddr += 4;
+
+                    int actualSize = elementCodec.encode(currentAddr, element);
+                    currentAddr += actualSize;
+
+                    long fileOffset = mmapAllocator.getFileOffsetForAddress(value.address);
+                    UnsafeOps.putLong(currentAddr, fileOffset);
+                    currentAddr += 8;
+
+                    UnsafeOps.putInt(currentAddr, value.size);
+                    currentAddr += 4;
+
+                    totalEntries++;
+                }
+            } finally {
+                segment.lock.unlockRead(stamp);
+            }
+        }
+
+        UnsafeOps.putInt(address + 4, totalEntries);
+
+        return (int) (currentAddr - address);
+    }
+
+    /**
      * 从内存地址反序列化（使用相对偏移量）
      */
     public void deserializeWithOffsets(long address, int totalSize, long baseAddress) {
@@ -327,6 +374,58 @@ public class SetIndex<E> {
             currentAddr += 4;
 
             // 放入正确的段
+            int targetSegmentIndex = getSegmentIndex(element);
+            segments[targetSegmentIndex].forcePut(element, new Entry(addr, sz));
+        }
+
+        this.size.set(totalEntries);
+    }
+
+    /**
+     * 从内存地址反序列化（读取文件偏移并转换为物理地址，支持多段映射文件）
+     */
+    public void deserializeWithFileOffsets(long address, int totalSize, MmapAllocator mmapAllocator) {
+        long currentAddr = address;
+
+        int segmentCount = UnsafeOps.getInt(currentAddr);
+        currentAddr += 4;
+
+        if (segmentCount != segments.length) {
+            throw new IllegalStateException("段数不匹配: 期望 " + segments.length + ", 实际 " + segmentCount);
+        }
+
+        for (Segment<E> segment : segments) {
+            segment.clear();
+        }
+
+        int totalEntries = UnsafeOps.getInt(currentAddr);
+        currentAddr += 4;
+
+        int maxPossibleEntries = (totalSize - 8) / 17;
+        if (totalEntries < 0 || totalEntries > maxPossibleEntries) {
+            throw new IllegalStateException("反序列化数据损坏：totalEntries=" + totalEntries
+                    + " 超出合法范围 [0, " + maxPossibleEntries + "]");
+        }
+
+        for (int i = 0; i < totalEntries; i++) {
+            int elementSize = UnsafeOps.getInt(currentAddr);
+            currentAddr += 4;
+
+            if (elementSize < 0 || elementSize > totalSize) {
+                throw new IllegalStateException("反序列化数据损坏：第 " + i
+                        + " 条 entry 的 elementSize=" + elementSize + " 非法");
+            }
+
+            E element = elementCodec.decode(currentAddr);
+            currentAddr += elementSize;
+
+            long fileOffset = UnsafeOps.getLong(currentAddr);
+            currentAddr += 8;
+            long addr = mmapAllocator.getAddressForOffset(fileOffset);
+
+            int sz = UnsafeOps.getInt(currentAddr);
+            currentAddr += 4;
+
             int targetSegmentIndex = getSegmentIndex(element);
             segments[targetSegmentIndex].forcePut(element, new Entry(addr, sz));
         }

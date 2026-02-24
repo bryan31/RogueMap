@@ -209,7 +209,7 @@ public class RogueQueue<E> implements AutoCloseable {
                 newStorage.offer(element);
 
                 // 获取下一个节点
-                currentNode = UnsafeOps.getLong(currentNode + LinkedQueueStorage.NEXT_OFFSET_POS);
+                currentNode = linkedStorage.getNextOffset(currentNode);
             }
 
             // 3. 序列化新 storage 元数据
@@ -295,9 +295,12 @@ public class RogueQueue<E> implements AutoCloseable {
     private void saveMmapMetadata() {
         long currentDataOffset = allocator.usedMemory();
         int metadataSize = storage.serializedSize();
-        long metadataOffset = currentDataOffset;
+        long metadataAddress = allocator.allocate(metadataSize);
+        if (metadataAddress == 0) {
+            throw new OutOfMemoryError("无法分配 " + metadataSize + " 字节保存 Queue 元数据");
+        }
+        long metadataOffset = mmapAllocator.getFileOffsetForAddress(metadataAddress);
         long baseAddress = mmapAllocator.getBaseAddress();
-        long metadataAddress = baseAddress + metadataOffset;
 
         // 序列化元数据
         storage.serialize(metadataAddress, baseAddress);
@@ -488,7 +491,7 @@ public class RogueQueue<E> implements AutoCloseable {
                 if (header.getDataType() == MmapFileHeader.DATA_TYPE_QUEUE_LINKED) {
                     storage = restoreLinkedQueue(allocator, mmapAllocator, header, baseAddress);
                 } else if (header.getDataType() == MmapFileHeader.DATA_TYPE_QUEUE_CIRCULAR) {
-                    storage = restoreCircularQueue(allocator, header, baseAddress);
+                    storage = restoreCircularQueue(allocator, mmapAllocator, header, baseAddress);
                 } else {
                     throw new IllegalStateException("文件类型不匹配：期望 QUEUE，实际 " + header.getDataType());
                 }
@@ -532,7 +535,7 @@ public class RogueQueue<E> implements AutoCloseable {
 
             // 正常关闭恢复：从 close() 时写入的 metadata 恢复
             if (header.getIndexSize() > 0) {
-                long metadataAddress = baseAddress + header.getIndexOffset();
+                long metadataAddress = mmapAllocator.getAddressForOffset(header.getIndexOffset());
                 storage.deserialize(metadataAddress, (int) header.getIndexSize(), baseAddress);
             }
 
@@ -540,16 +543,17 @@ public class RogueQueue<E> implements AutoCloseable {
         }
 
         @SuppressWarnings("unchecked")
-        private QueueStorage<E> restoreCircularQueue(Allocator allocator, MmapFileHeader header, long baseAddress) {
+        private QueueStorage<E> restoreCircularQueue(Allocator allocator, MmapAllocator mmapAllocator,
+                                                     MmapFileHeader header, long baseAddress) {
             // 从元数据恢复环形队列
-            long metadataAddress = baseAddress + header.getIndexOffset();
+            long metadataAddress = mmapAllocator.getAddressForOffset(header.getIndexOffset());
 
             // 读取元数据
             long bufferRelOffset = com.yomahub.roguemap.memory.UnsafeOps.getLong(metadataAddress);
             int capacity = com.yomahub.roguemap.memory.UnsafeOps.getInt(metadataAddress + 8);
             int maxElementSize = com.yomahub.roguemap.memory.UnsafeOps.getInt(metadataAddress + 12);
 
-            long bufferAddress = baseAddress + bufferRelOffset;
+            long bufferAddress = mmapAllocator.getAddressForOffset(bufferRelOffset);
 
             return new CircularQueueStorage<>(allocator, elementCodec, bufferAddress, capacity, maxElementSize);
         }

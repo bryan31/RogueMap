@@ -1,6 +1,7 @@
 package com.yomahub.roguemap.queue;
 
 import com.yomahub.roguemap.memory.Allocator;
+import com.yomahub.roguemap.memory.MmapAllocator;
 import com.yomahub.roguemap.memory.UnsafeOps;
 import com.yomahub.roguemap.serialization.Codec;
 
@@ -298,8 +299,8 @@ public class CircularQueueStorage<E> implements QueueStorage<E> {
     public int serialize(long address, long baseAddress) {
         long stamp = lock.readLock();
         try {
-            // buffer相对偏移
-            long bufferRelOffset = bufferAddress - baseAddress;
+            // buffer 文件偏移
+            long bufferRelOffset = toStoredOffset(bufferAddress);
             UnsafeOps.putLong(address, bufferRelOffset);
 
             // capacity
@@ -333,5 +334,12 @@ public class CircularQueueStorage<E> implements QueueStorage<E> {
 
     public int getMaxElementSize() {
         return maxElementSize;
+    }
+
+    private long toStoredOffset(long address) {
+        if (allocator instanceof MmapAllocator) {
+            return ((MmapAllocator) allocator).getFileOffsetForAddress(address);
+        }
+        return address;
     }
 }

@@ -1,5 +1,6 @@
 package com.yomahub.roguemap.list;
 
+import com.yomahub.roguemap.memory.MmapAllocator;
 import com.yomahub.roguemap.memory.UnsafeOps;
 
 import java.util.concurrent.atomic.AtomicInteger;
@@ -414,6 +415,38 @@ public class ListIndex {
     }
 
     /**
+     * 序列化到内存地址（使用文件偏移，支持多段映射文件）
+     */
+    public int serializeWithFileOffsets(long address, MmapAllocator mmapAllocator) {
+        long currentAddr = address;
+
+        long stamp = lock.readLock();
+        try {
+            long headFileOffset = headOffset == 0 ? 0 : mmapAllocator.getFileOffsetForAddress(headOffset);
+            UnsafeOps.putLong(currentAddr, headFileOffset);
+            currentAddr += 8;
+
+            long tailFileOffset = tailOffset == 0 ? 0 : mmapAllocator.getFileOffsetForAddress(tailOffset);
+            UnsafeOps.putLong(currentAddr, tailFileOffset);
+            currentAddr += 8;
+
+            UnsafeOps.putInt(currentAddr, size.get());
+            currentAddr += 4;
+
+            int currentSize = size.get();
+            for (int i = 0; i < currentSize; i++) {
+                long fileOffset = positionIndex[i] == 0 ? 0 : mmapAllocator.getFileOffsetForAddress(positionIndex[i]);
+                UnsafeOps.putLong(currentAddr, fileOffset);
+                currentAddr += 8;
+            }
+
+            return (int) (currentAddr - address);
+        } finally {
+            lock.unlockRead(stamp);
+        }
+    }
+
+    /**
      * 从内存地址反序列化
      */
     public void deserialize(long address, int totalSize, long baseAddress) {
@@ -442,6 +475,39 @@ public class ListIndex {
             for (int i = 0; i < savedSize; i++) {
                 long relOffset = UnsafeOps.getLong(currentAddr);
                 positionIndex[i] = relOffset == 0 ? 0 : (baseAddress + relOffset);
+                currentAddr += 8;
+            }
+
+            size.set(savedSize);
+        } finally {
+            lock.unlockWrite(stamp);
+        }
+    }
+
+    /**
+     * 从内存地址反序列化（读取文件偏移并转换为物理地址，支持多段映射文件）
+     */
+    public void deserializeWithFileOffsets(long address, int totalSize, MmapAllocator mmapAllocator) {
+        long currentAddr = address;
+
+        long stamp = lock.writeLock();
+        try {
+            long headFileOffset = UnsafeOps.getLong(currentAddr);
+            headOffset = headFileOffset == 0 ? 0 : mmapAllocator.getAddressForOffset(headFileOffset);
+            currentAddr += 8;
+
+            long tailFileOffset = UnsafeOps.getLong(currentAddr);
+            tailOffset = tailFileOffset == 0 ? 0 : mmapAllocator.getAddressForOffset(tailFileOffset);
+            currentAddr += 8;
+
+            int savedSize = UnsafeOps.getInt(currentAddr);
+            currentAddr += 4;
+
+            ensureIndexCapacity(savedSize);
+
+            for (int i = 0; i < savedSize; i++) {
+                long fileOffset = UnsafeOps.getLong(currentAddr);
+                positionIndex[i] = fileOffset == 0 ? 0 : mmapAllocator.getAddressForOffset(fileOffset);
                 currentAddr += 8;
             }
 

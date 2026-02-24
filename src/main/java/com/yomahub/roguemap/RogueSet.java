@@ -224,11 +224,7 @@ public class RogueSet<E> implements Iterable<E>, AutoCloseable {
             return;
         }
 
-        int indexSize = index.serializedSize();
         saveMmapIndex();
-
-        long newOffset = allocator.usedMemory() + indexSize;
-        mmapAllocator.restoreOffset(newOffset);
         mmapAllocator.flush();
     }
 
@@ -274,8 +270,12 @@ public class RogueSet<E> implements Iterable<E>, AutoCloseable {
             // 3. 序列化新索引到新文件
             long currentDataOffset = newAllocator.usedMemory();
             int newIndexSize = newIndex.serializedSize();
-            long indexAddress = newBaseAddress + currentDataOffset;
-            newIndex.serializeWithOffsets(indexAddress, newBaseAddress);
+            long indexAddress = newAllocator.allocate(newIndexSize);
+            if (indexAddress == 0) {
+                throw new RuntimeException("compact 空间不足：无法分配索引区域");
+            }
+            long indexOffset = newAllocator.getFileOffsetForAddress(indexAddress);
+            newIndex.serializeWithFileOffsets(indexAddress, newAllocator);
 
             MmapFileHeader header = new MmapFileHeader();
             header.setMagicNumber(MmapFileHeader.MAGIC_NUMBER);
@@ -284,7 +284,7 @@ public class RogueSet<E> implements Iterable<E>, AutoCloseable {
             header.setIndexType(0);
             header.setEntryCount(newIndex.size());
             header.setCurrentOffset(currentDataOffset);
-            header.setIndexOffset(currentDataOffset);
+            header.setIndexOffset(indexOffset);
             header.setIndexSize(newIndexSize);
             newAllocator.writeHeader(header);
 
@@ -365,14 +365,14 @@ public class RogueSet<E> implements Iterable<E>, AutoCloseable {
 
         // 计算索引大小
         int indexSize = index.serializedSize();
+        long indexAddress = allocator.allocate(indexSize);
+        if (indexAddress == 0) {
+            throw new OutOfMemoryError("无法分配 " + indexSize + " 字节保存 Set 索引");
+        }
+        long indexOffset = mmapAllocator.getFileOffsetForAddress(indexAddress);
 
-        // 索引数据放在所有数据之后
-        long indexOffset = currentDataOffset;
-        long baseAddress = mmapAllocator.getBaseAddress();
-        long indexAddress = baseAddress + indexOffset;
-
-        // 序列化索引（使用相对偏移量）
-        index.serializeWithOffsets(indexAddress, baseAddress);
+        // 序列化索引（使用文件偏移，支持扩容后的多段映射）
+        index.serializeWithFileOffsets(indexAddress, mmapAllocator);
 
         // 更新头部
         MmapFileHeader header = new MmapFileHeader();
@@ -580,9 +580,8 @@ public class RogueSet<E> implements Iterable<E>, AutoCloseable {
                     index = new SetIndex<>(elementCodec, segmentCount, initialCapacity);
 
                     if (header.getIndexSize() > 0) {
-                        long baseAddress = mmapAllocator.getBaseAddress();
-                        long indexAddress = baseAddress + header.getIndexOffset();
-                        index.deserializeWithOffsets(indexAddress, (int) header.getIndexSize(), baseAddress);
+                        long indexAddress = mmapAllocator.getAddressForOffset(header.getIndexOffset());
+                        index.deserializeWithFileOffsets(indexAddress, (int) header.getIndexSize(), mmapAllocator);
                     }
 
                     // 标记文件为"已打开"（崩溃检测）

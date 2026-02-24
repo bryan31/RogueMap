@@ -1,6 +1,7 @@
 package com.yomahub.roguemap.queue;
 
 import com.yomahub.roguemap.memory.Allocator;
+import com.yomahub.roguemap.memory.MmapAllocator;
 import com.yomahub.roguemap.memory.UnsafeOps;
 import com.yomahub.roguemap.serialization.Codec;
 import com.yomahub.roguemap.storage.MmapFileHeader;
@@ -310,8 +311,8 @@ public class LinkedQueueStorage<E> implements QueueStorage<E> {
     private void writeSnapshot() {
         if (snapshotAddress == 0) return; // 临时文件模式，不写快照
 
-        long headRel = headOffset == 0 ? 0 : (headOffset - baseAddress);
-        long tailRel = tailOffset == 0 ? 0 : (tailOffset - baseAddress);
+        long headRel = toStoredOffset(headOffset);
+        long tailRel = toStoredOffset(tailOffset);
 
         UnsafeOps.putLong(snapshotAddress, headRel);                           // offset 64
         UnsafeOps.putLong(snapshotAddress + 8, tailRel);                       // offset 72
@@ -366,8 +367,8 @@ public class LinkedQueueStorage<E> implements QueueStorage<E> {
                     "快照数据损坏：tailRel=" + tailRel + " 超出有效范围 [" + minValid + ", " + maxValid + "]");
             }
 
-            headOffset = headNull ? 0 : (baseAddress + headRel);
-            tailOffset = tailNull ? 0 : (baseAddress + tailRel);
+            headOffset = headNull ? 0 : toAddress(headRel);
+            tailOffset = tailNull ? 0 : toAddress(tailRel);
             this.size.set(snapSize);
         } finally {
             lock.unlockWrite(stamp);
@@ -376,12 +377,12 @@ public class LinkedQueueStorage<E> implements QueueStorage<E> {
 
     // ========== 节点操作方法 ==========
 
-    private static void setNodeNext(long nodeBaseAddress, long nextOffset) {
-        UnsafeOps.putLong(nodeBaseAddress + NEXT_OFFSET_POS, nextOffset);
+    private void setNodeNext(long nodeBaseAddress, long nextOffset) {
+        UnsafeOps.putLong(nodeBaseAddress + NEXT_OFFSET_POS, toStoredOffset(nextOffset));
     }
 
-    private static long getNodeNext(long nodeBaseAddress) {
-        return UnsafeOps.getLong(nodeBaseAddress + NEXT_OFFSET_POS);
+    private long getNodeNext(long nodeBaseAddress) {
+        return toAddress(UnsafeOps.getLong(nodeBaseAddress + NEXT_OFFSET_POS));
     }
 
     private static void setElementSize(long nodeBaseAddress, int elementSize) {
@@ -404,12 +405,12 @@ public class LinkedQueueStorage<E> implements QueueStorage<E> {
     public int serialize(long address, long baseAddress) {
         long stamp = lock.readLock();
         try {
-            // headOffset（相对偏移）
-            long headRelOffset = headOffset == 0 ? 0 : (headOffset - baseAddress);
+            // headOffset（文件偏移）
+            long headRelOffset = toStoredOffset(headOffset);
             UnsafeOps.putLong(address, headRelOffset);
 
-            // tailOffset（相对偏移）
-            long tailRelOffset = tailOffset == 0 ? 0 : (tailOffset - baseAddress);
+            // tailOffset（文件偏移）
+            long tailRelOffset = toStoredOffset(tailOffset);
             UnsafeOps.putLong(address + 8, tailRelOffset);
 
             // size
@@ -427,11 +428,11 @@ public class LinkedQueueStorage<E> implements QueueStorage<E> {
         try {
             // headOffset
             long headRelOffset = UnsafeOps.getLong(address);
-            headOffset = headRelOffset == 0 ? 0 : (baseAddress + headRelOffset);
+            headOffset = headRelOffset == 0 ? 0 : toAddress(headRelOffset);
 
             // tailOffset
             long tailRelOffset = UnsafeOps.getLong(address + 8);
-            tailOffset = tailRelOffset == 0 ? 0 : (baseAddress + tailRelOffset);
+            tailOffset = tailRelOffset == 0 ? 0 : toAddress(tailRelOffset);
 
             // size
             this.size.set(UnsafeOps.getInt(address + 16));
@@ -447,5 +448,32 @@ public class LinkedQueueStorage<E> implements QueueStorage<E> {
 
     public long getTailOffset() {
         return tailOffset;
+    }
+
+    /**
+     * 供 compact() 顺序遍历活跃节点使用。
+     */
+    public long getNextOffset(long nodeAddress) {
+        return getNodeNext(nodeAddress);
+    }
+
+    private long toStoredOffset(long address) {
+        if (address == 0) {
+            return 0;
+        }
+        if (allocator instanceof MmapAllocator) {
+            return ((MmapAllocator) allocator).getFileOffsetForAddress(address);
+        }
+        return address - baseAddress;
+    }
+
+    private long toAddress(long storedOffset) {
+        if (storedOffset == 0) {
+            return 0;
+        }
+        if (allocator instanceof MmapAllocator) {
+            return ((MmapAllocator) allocator).getAddressForOffset(storedOffset);
+        }
+        return baseAddress + storedOffset;
     }
 }

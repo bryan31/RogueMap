@@ -288,4 +288,123 @@ public class AutoExpansionTest {
             }
         }
     }
+
+    // ===== 8. RogueList 持久化模式自动扩容 =====
+
+    @Test
+    public void testListPersistentAutoExpandAndRecover() {
+        String path = testFile("list_expand_recover");
+        long initialSize = 4 * 1024;
+        int count = 600;
+
+        try (RogueList<Long> list = RogueList.<Long>mmap()
+                .persistent(path)
+                .allocateSize(initialSize)
+                .autoExpand(true)
+                .elementCodec(PrimitiveCodecs.LONG)
+                .build()) {
+
+            for (long i = 0; i < count; i++) {
+                list.addLast(i);
+            }
+
+            assertEquals(count, list.size());
+            assertEquals(0L, list.getFirst().longValue());
+            assertEquals(count - 1L, list.getLast().longValue());
+
+            StorageMetrics metrics = list.getMetrics();
+            assertTrue(metrics.getTotalFileSize() > initialSize, "List 扩容后文件大小应增大");
+        }
+
+        try (RogueList<Long> recovered = RogueList.<Long>mmap()
+                .persistent(path)
+                .elementCodec(PrimitiveCodecs.LONG)
+                .build()) {
+            assertEquals(count, recovered.size());
+            assertEquals(0L, recovered.get(0).longValue());
+            assertEquals(300L, recovered.get(300).longValue());
+            assertEquals(599L, recovered.get(599).longValue());
+        }
+    }
+
+    // ===== 9. RogueSet 持久化模式自动扩容 =====
+
+    @Test
+    public void testSetPersistentAutoExpandAndRecover() {
+        String path = testFile("set_expand_recover");
+        long initialSize = 4 * 1024;
+        int count = 800;
+
+        try (RogueSet<Long> set = RogueSet.<Long>mmap()
+                .persistent(path)
+                .allocateSize(initialSize)
+                .autoExpand(true)
+                .elementCodec(PrimitiveCodecs.LONG)
+                .build()) {
+
+            for (long i = 0; i < count; i++) {
+                set.add(i);
+            }
+
+            assertEquals(count, set.size());
+            assertTrue(set.contains(0L));
+            assertTrue(set.contains(400L));
+            assertTrue(set.contains(799L));
+
+            StorageMetrics metrics = set.getMetrics();
+            assertTrue(metrics.getTotalFileSize() > initialSize, "Set 扩容后文件大小应增大");
+        }
+
+        try (RogueSet<Long> recovered = RogueSet.<Long>mmap()
+                .persistent(path)
+                .elementCodec(PrimitiveCodecs.LONG)
+                .build()) {
+            assertEquals(count, recovered.size());
+            assertTrue(recovered.contains(0L));
+            assertTrue(recovered.contains(400L));
+            assertTrue(recovered.contains(799L));
+        }
+    }
+
+    // ===== 10. RogueQueue(Linked) 持久化模式自动扩容 =====
+
+    @Test
+    public void testQueuePersistentAutoExpandAndRecover() {
+        String path = testFile("queue_expand_recover");
+        long initialSize = 4 * 1024;
+        int count = 600;
+
+        try (RogueQueue<Long> queue = RogueQueue.<Long>mmap()
+                .persistent(path)
+                .allocateSize(initialSize)
+                .autoExpand(true)
+                .linked()
+                .elementCodec(PrimitiveCodecs.LONG)
+                .build()) {
+
+            for (long i = 0; i < count; i++) {
+                assertTrue(queue.offer(i));
+            }
+
+            assertEquals(count, queue.size());
+            assertEquals(0L, queue.peek().longValue());
+
+            StorageMetrics metrics = queue.getMetrics();
+            assertTrue(metrics.getTotalFileSize() > initialSize, "Queue 扩容后文件大小应增大");
+        }
+
+        try (RogueQueue<Long> recovered = RogueQueue.<Long>mmap()
+                .persistent(path)
+                .linked()
+                .elementCodec(PrimitiveCodecs.LONG)
+                .build()) {
+            assertEquals(count, recovered.size());
+            for (int i = 0; i < count; i++) {
+                Long value = recovered.poll();
+                assertNotNull(value);
+                assertEquals(i, value.longValue());
+            }
+            assertTrue(recovered.isEmpty());
+        }
+    }
 }
