@@ -5,6 +5,8 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
+import java.util.ArrayList;
+import java.util.List;
 import java.io.Serializable;
 import java.util.Objects;
 
@@ -175,6 +177,75 @@ class KryoObjectCodecTest {
         TestData decoded3 = codec.decode(address3);
         assertEquals("Third", decoded3.name);
         assertEquals(3, decoded3.value);
+    }
+
+    @Test
+    void testTypeReferenceListRoundTrip() {
+        KryoObjectCodec<List<TestData>> codec = KryoObjectCodec.create(new TypeReference<List<TestData>>() {});
+
+        List<TestData> original = new ArrayList<>();
+        original.add(new TestData("Alice", 1));
+        original.add(new TestData("Bob", 2));
+
+        int size = codec.calculateSize(original);
+        int written = codec.encode(address, original);
+        assertEquals(size, written);
+
+        List<TestData> decoded = codec.decode(address);
+        assertNotNull(decoded);
+        assertEquals(2, decoded.size());
+        assertEquals(original, decoded);
+    }
+
+    @Test
+    void testTypeReferenceInterfaceRoot() {
+        KryoObjectCodec<List<TestData>> codec = KryoObjectCodec.create(new TypeReference<List<TestData>>() {});
+
+        List<TestData> original = new ArrayList<>();
+        original.add(new TestData("Interface", 100));
+
+        codec.calculateSize(original);
+        codec.encode(address, original);
+
+        List<TestData> decoded = codec.decode(address);
+        assertNotNull(decoded);
+        assertTrue(decoded instanceof ArrayList);
+        assertEquals("Interface", decoded.get(0).name);
+        assertEquals(100, decoded.get(0).value);
+    }
+
+    @Test
+    void testTypeReferenceNullAndEmpty() {
+        KryoObjectCodec<List<TestData>> codec = KryoObjectCodec.create(new TypeReference<List<TestData>>() {});
+
+        int nullSize = codec.calculateSize(null);
+        assertEquals(4, nullSize);
+        int nullWritten = codec.encode(address, null);
+        assertEquals(4, nullWritten);
+        assertNull(codec.decode(address));
+
+        List<TestData> empty = new ArrayList<>();
+        int emptySize = codec.calculateSize(empty);
+        int emptyWritten = codec.encode(address, empty);
+        assertEquals(emptySize, emptyWritten);
+
+        List<TestData> decodedEmpty = codec.decode(address);
+        assertNotNull(decodedEmpty);
+        assertTrue(decodedEmpty.isEmpty());
+    }
+
+    @Test
+    void testClassModeBackwardBehavior() {
+        KryoObjectCodec<TestData> codec = KryoObjectCodec.create(TestData.class);
+        TestData original = new TestData("ClassMode", 777);
+
+        int size = codec.calculateSize(original);
+        int written = codec.encode(address, original);
+        assertEquals(size, written);
+
+        TestData decoded = codec.decode(address);
+        assertNotNull(decoded);
+        assertEquals(original, decoded);
     }
 
     @Test

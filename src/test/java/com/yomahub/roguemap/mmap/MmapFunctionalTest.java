@@ -4,11 +4,14 @@ import com.yomahub.roguemap.RogueMap;
 import com.yomahub.roguemap.serialization.KryoObjectCodec;
 import com.yomahub.roguemap.serialization.PrimitiveCodecs;
 import com.yomahub.roguemap.serialization.StringCodec;
+import com.yomahub.roguemap.serialization.TypeReference;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.io.File;
+import java.util.ArrayList;
+import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -480,6 +483,50 @@ public class MmapFunctionalTest {
             assertEquals(2L, retrieved2.getId());
             assertEquals("Bob", retrieved2.getName());
             assertEquals(30, retrieved2.getAge());
+
+            map2.close();
+        } finally {
+            new File(testFile).delete();
+        }
+    }
+
+    @Test
+    public void testGenericListObjectPersistence() {
+        String testFile = "target/test-mmap-generic-list.db";
+
+        try {
+            KryoObjectCodec<List<TestUser>> listCodec =
+                    KryoObjectCodec.create(new TypeReference<List<TestUser>>() {});
+
+            RogueMap<String, List<TestUser>> map1 = RogueMap.<String, List<TestUser>>mmap()
+                    .persistent(testFile)
+                    .allocateSize(10 * 1024 * 1024L)
+                    .keyCodec(new StringCodec())
+                    .valueCodec(listCodec)
+                    .build();
+
+            List<TestUser> users = new ArrayList<>();
+            users.add(new TestUser(1L, "Alice", 25));
+            users.add(new TestUser(2L, "Bob", 30));
+            map1.put("users", users);
+            map1.close();
+
+            RogueMap<String, List<TestUser>> map2 = RogueMap.<String, List<TestUser>>mmap()
+                    .persistent(testFile)
+                    .allocateSize(10 * 1024 * 1024L)
+                    .keyCodec(new StringCodec())
+                    .valueCodec(KryoObjectCodec.create(new TypeReference<List<TestUser>>() {}))
+                    .build();
+
+            List<TestUser> restored = map2.get("users");
+            assertNotNull(restored);
+            assertEquals(2, restored.size());
+            assertEquals(1L, restored.get(0).getId());
+            assertEquals("Alice", restored.get(0).getName());
+            assertEquals(25, restored.get(0).getAge());
+            assertEquals(2L, restored.get(1).getId());
+            assertEquals("Bob", restored.get(1).getName());
+            assertEquals(30, restored.get(1).getAge());
 
             map2.close();
         } finally {

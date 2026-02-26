@@ -6,6 +6,7 @@ import com.esotericsoftware.kryo.io.Output;
 import com.yomahub.roguemap.memory.UnsafeOps;
 
 import java.io.ByteArrayOutputStream;
+import java.lang.reflect.Modifier;
 
 /**
  * 基于 Kryo 的通用对象编解码器
@@ -19,6 +20,13 @@ import java.io.ByteArrayOutputStream;
 public class KryoObjectCodec<T> implements Codec<T> {
 
     private final Class<T> type;
+    private final Class<?> rawClass;
+    private final Mode mode;
+
+    private enum Mode {
+        CLASS_MODE,
+        TYPE_REF_MODE
+    }
 
     /**
      * 线程本地的 Kryo 实例,避免多线程竞争
@@ -42,18 +50,46 @@ public class KryoObjectCodec<T> implements Codec<T> {
      * @param registerClass 是否注册类(注册后性能更好,序列化数据更小)
      */
     public KryoObjectCodec(Class<T> type, boolean registerClass) {
+        if (type == null) {
+            throw new IllegalArgumentException("type 不能为 null");
+        }
+
         this.type = type;
-        final Class<T> finalType = type;
+        this.rawClass = type;
+        this.mode = Mode.CLASS_MODE;
+        final Class<?> classToRegister = type;
         final boolean shouldRegister = registerClass;
 
-        this.kryoHolder = ThreadLocal.withInitial(() -> {
-            KryoHolder holder = new KryoHolder();
-            if (shouldRegister) {
-                // 预先注册类以提升性能
-                holder.kryo.register(finalType);
-            }
-            return holder;
-        });
+        this.kryoHolder = createKryoHolder(classToRegister, shouldRegister);
+    }
+
+    /**
+     * 创建 KryoObjectCodec 实例（支持复杂泛型）
+     *
+     * @param typeReference 目标类型引用
+     */
+    public KryoObjectCodec(TypeReference<T> typeReference) {
+        this(typeReference, true);
+    }
+
+    /**
+     * 创建 KryoObjectCodec 实例（支持复杂泛型）
+     *
+     * @param typeReference 目标类型引用
+     * @param registerClass 是否注册原始类型（若是接口/抽象类则自动跳过）
+     */
+    public KryoObjectCodec(TypeReference<T> typeReference, boolean registerClass) {
+        if (typeReference == null) {
+            throw new IllegalArgumentException("typeReference 不能为 null");
+        }
+
+        this.type = null;
+        this.rawClass = typeReference.getRawClass();
+        this.mode = Mode.TYPE_REF_MODE;
+
+        final Class<?> classToRegister = canRegister(rawClass) ? rawClass : null;
+        final boolean shouldRegister = registerClass;
+        this.kryoHolder = createKryoHolder(classToRegister, shouldRegister);
     }
 
     @Override
@@ -121,7 +157,21 @@ public class KryoObjectCodec<T> implements Codec<T> {
         Input input = holder.input;
         input.setBuffer(data);
 
-        return holder.kryo.readObject(input, type);
+        if (mode == Mode.CLASS_MODE) {
+            return holder.kryo.readObject(input, type);
+        }
+
+        Object decoded = holder.kryo.readClassAndObject(input);
+        if (decoded == null) {
+            return null;
+        }
+        if (!rawClass.isInstance(decoded)) {
+            throw new IllegalStateException("解码类型不匹配，期望: " + rawClass.getTypeName() +
+                    ", 实际: " + decoded.getClass().getTypeName());
+        }
+        @SuppressWarnings("unchecked")
+        T casted = (T) decoded;
+        return casted;
     }
 
     /**
@@ -135,10 +185,33 @@ public class KryoObjectCodec<T> implements Codec<T> {
         ByteArrayOutputStream baos = new ByteArrayOutputStream();
         output.reset();
         output.setOutputStream(baos);
-        kryo.writeObject(output, value);
+        if (mode == Mode.CLASS_MODE) {
+            kryo.writeObject(output, value);
+        } else {
+            kryo.writeClassAndObject(output, value);
+        }
         output.flush();
 
         return baos.toByteArray();
+    }
+
+    private static boolean canRegister(Class<?> clazz) {
+        if (clazz == null) {
+            return false;
+        }
+        int modifiers = clazz.getModifiers();
+        return !clazz.isInterface() && !Modifier.isAbstract(modifiers);
+    }
+
+    private static ThreadLocal<KryoHolder> createKryoHolder(Class<?> classToRegister, boolean shouldRegister) {
+        return ThreadLocal.withInitial(() -> {
+            KryoHolder holder = new KryoHolder();
+            if (shouldRegister && classToRegister != null) {
+                // 预先注册类以提升性能
+                holder.kryo.register(classToRegister);
+            }
+            return holder;
+        });
     }
 
     /**
@@ -184,5 +257,28 @@ public class KryoObjectCodec<T> implements Codec<T> {
      */
     public static <T> KryoObjectCodec<T> create(Class<T> type, boolean registerClass) {
         return new KryoObjectCodec<>(type, registerClass);
+    }
+
+    /**
+     * 创建一个 KryoObjectCodec 实例的便捷工厂方法（支持复杂泛型）
+     *
+     * @param typeReference 目标类型引用
+     * @param <T> 类型参数
+     * @return KryoObjectCodec 实例
+     */
+    public static <T> KryoObjectCodec<T> create(TypeReference<T> typeReference) {
+        return new KryoObjectCodec<>(typeReference);
+    }
+
+    /**
+     * 创建一个 KryoObjectCodec 实例的便捷工厂方法（支持复杂泛型）
+     *
+     * @param typeReference 目标类型引用
+     * @param registerClass 是否注册原始类型
+     * @param <T> 类型参数
+     * @return KryoObjectCodec 实例
+     */
+    public static <T> KryoObjectCodec<T> create(TypeReference<T> typeReference, boolean registerClass) {
+        return new KryoObjectCodec<>(typeReference, registerClass);
     }
 }

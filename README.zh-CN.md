@@ -150,6 +150,10 @@ RogueQueue<Long> circular = RogueQueue.<Long>mmap()
 
 **对象**：`KryoObjectCodec.create(YourClass.class)`（可选依赖）
 
+**复杂泛型**：`KryoObjectCodec.create(new TypeReference<List<User>>() {})`（可选依赖）
+
+`create(Class<T>)` 保持现有编解码行为不变，确保向后兼容。
+
 ## 文档
 
 完整文档、性能测试报告和高级用法，请访问官网。

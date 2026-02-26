@@ -150,6 +150,10 @@ RogueQueue<Long> circular = RogueQueue.<Long>mmap()
 
 **Objects**: `KryoObjectCodec.create(YourClass.class)` (optional dependency)
 
+**Complex generics**: `KryoObjectCodec.create(new TypeReference<List<User>>() {})` (optional dependency)
+
+`create(Class<T>)` keeps the existing encoding/decoding behavior for backward compatibility.
+
 ## Documentation
 
 For complete documentation, performance benchmarks, and advanced usage, please visit the official website.
