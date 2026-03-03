@@ -16,7 +16,7 @@ import java.util.concurrent.locks.StampedLock;
  * 元素本身作为key，值部分存储元素数据的内存地址和大小
  * 使用 StampedLock 提供乐观读，64段设计减少锁竞争
  */
-public class SetIndex<E> {
+public class SetIndex<E> implements SetIndexStore<E> {
 
     private static final int DEFAULT_SEGMENT_COUNT = 64;
     private static final int DEFAULT_INITIAL_CAPACITY = 16;

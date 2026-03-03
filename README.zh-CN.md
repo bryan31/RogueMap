@@ -70,6 +70,14 @@ RogueMap<String, Long> persistentMap = RogueMap.<String, Long>mmap()
     .valueCodec(PrimitiveCodecs.LONG)
     .build();
 
+// 超低堆 String Key 模式（索引与 key 字节放在 mmap）
+RogueMap<String, Long> lowHeapMap = RogueMap.<String, Long>mmap()
+    .persistent("data/lowheap.db")
+    .keyCodec(StringCodec.INSTANCE)
+    .valueCodec(PrimitiveCodecs.LONG)
+    .lowHeapIndex()
+    .build();
+
 // 事务
 try (RogueMap.Transaction<String, Long> txn = map.beginTransaction()) {
     txn.put("key1", 1L);
@@ -80,6 +88,9 @@ try (RogueMap.Transaction<String, Long> txn = map.beginTransaction()) {
 // 遍历所有键值对
 map.forEach((key, value) -> System.out.println(key + " = " + value));
 ```
+
+> 注意：`lowHeapIndex()` 首版仅支持 `StringCodec.INSTANCE`，不支持 `beginTransaction()`，
+> 且不会自动迁移旧索引格式。
 
 ### RogueList - 双向链表
 

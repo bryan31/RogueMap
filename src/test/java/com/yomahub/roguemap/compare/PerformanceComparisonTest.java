@@ -3,8 +3,10 @@ package com.yomahub.roguemap.compare;
 import com.github.benmanes.caffeine.cache.Cache;
 import com.github.benmanes.caffeine.cache.Caffeine;
 import com.yomahub.roguemap.RogueMap;
+import com.yomahub.roguemap.RogueSet;
 import com.yomahub.roguemap.serialization.KryoObjectCodec;
 import com.yomahub.roguemap.serialization.PrimitiveCodecs;
+import com.yomahub.roguemap.serialization.StringCodec;
 import it.unimi.dsi.fastutil.longs.Long2ObjectMap;
 import it.unimi.dsi.fastutil.longs.Long2ObjectOpenHashMap;
 import org.mapdb.DB;
@@ -16,6 +18,7 @@ import java.io.File;
 import java.io.IOException;
 import java.lang.management.ManagementFactory;
 import java.lang.management.MemoryMXBean;
+import java.util.Arrays;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Random;
@@ -37,6 +40,8 @@ import java.util.concurrent.ConcurrentMap;
  * - RogueMap OffHeap 模式
  * - RogueMap Mmap 临时文件模式
  * - RogueMap Mmap 持久化模式
+ * - RogueMap Mmap 低堆 String Key 模式
+ * - RogueSet Mmap 低堆 String 模式
  * - MapDB OffHeap 模式
  * - MapDB 临时文件模式
  * - MapDB 持久化模式
@@ -73,6 +78,12 @@ public class PerformanceComparisonTest {
         forceGC();
 
         results.put("RogueMap.Mmap持久化模式", testMmapPersistentMode());
+        forceGC();
+
+        results.put("RogueMap.Mmap低堆String模式", testMmapLowHeapStringMode());
+        forceGC();
+
+        results.put("RogueSet.Mmap低堆String模式", testSetMmapLowHeapStringMode());
         forceGC();
 
         results.put("MapDB.OffHeap模式", testMapDBOffHeap());
@@ -281,6 +292,128 @@ public class PerformanceComparisonTest {
         }
 
         return new TestResult("RogueMap.Mmap持久化模式", heapUsed, writeTimeMs, readTimeMs);
+    }
+
+    /**
+     * 测试 Mmap 低堆 String Key 模式
+     */
+    private static TestResult testMmapLowHeapStringMode() throws IOException {
+        System.out.println("测试 RogueMap.Mmap 低堆 String Key 模式...");
+
+        forceGC();
+        long baselineMemory = getCurrentHeapMemory();
+
+        RogueMap<String, TestValueObject> map = null;
+        long writeTimeMs = 0;
+        long readTimeMs = 0;
+        long heapUsed = 0;
+
+        try {
+            map = RogueMap.<String, TestValueObject>mmap()
+                    .temporary()
+                    .keyCodec(StringCodec.INSTANCE)
+                    .valueCodec(KryoObjectCodec.create(TestValueObject.class))
+                    .lowHeapIndex()
+                    .build();
+
+            Random random = new Random(RANDOM_SEED);
+
+            long writeStartTime = System.nanoTime();
+            for (int i = 0; i < DATASET_SIZE; i++) {
+                String key = Long.toString(i + 1L);
+                TestValueObject value = createTestValue(i, random);
+                map.put(key, value);
+            }
+            long writeEndTime = System.nanoTime();
+            writeTimeMs = (writeEndTime - writeStartTime) / 1_000_000;
+
+            long[] randomKeys = generateRandomKeys(DATASET_SIZE, RANDOM_SEED);
+
+            long readStartTime = System.nanoTime();
+            for (int i = 0; i < DATASET_SIZE; i++) {
+                String key = Long.toString(randomKeys[i]);
+                map.get(key);
+            }
+            long readEndTime = System.nanoTime();
+            readTimeMs = (readEndTime - readStartTime) / 1_000_000;
+
+            randomKeys = null;
+            random = null;
+
+            forceGC();
+            long usedMemory = getCurrentHeapMemory();
+            heapUsed = usedMemory - baselineMemory;
+
+            System.out.printf("  低堆String Map 包含 %d 个条目%n", map.size());
+            System.out.printf("  写入耗时: %d ms%n", writeTimeMs);
+            System.out.printf("  读取耗时: %d ms%n", readTimeMs);
+            System.out.printf("  堆内存占用: %.2f MB%n", heapUsed / 1024.0 / 1024.0);
+        } finally {
+            if (map != null) {
+                map.close();
+            }
+            forceGC();
+        }
+
+        return new TestResult("RogueMap.Mmap低堆String模式", heapUsed, writeTimeMs, readTimeMs);
+    }
+
+    /**
+     * 测试 RogueSet Mmap 低堆 String 模式
+     */
+    private static TestResult testSetMmapLowHeapStringMode() {
+        System.out.println("测试 RogueSet.Mmap 低堆 String 模式...");
+
+        forceGC();
+        long baselineMemory = getCurrentHeapMemory();
+
+        RogueSet<String> set = null;
+        long writeTimeMs = 0;
+        long readTimeMs = 0;
+        long heapUsed = 0;
+
+        try {
+            set = RogueSet.<String>mmap()
+                    .temporary()
+                    .allocateSize(1024L * 1024 * 1024)
+                    .elementCodec(StringCodec.INSTANCE)
+                    .lowHeapIndex()
+                    .build();
+
+            long writeStartTime = System.nanoTime();
+            for (int i = 0; i < DATASET_SIZE; i++) {
+                set.add(Long.toString(i + 1L));
+            }
+            long writeEndTime = System.nanoTime();
+            writeTimeMs = (writeEndTime - writeStartTime) / 1_000_000;
+
+            long[] randomKeys = generateRandomKeys(DATASET_SIZE, RANDOM_SEED);
+
+            long readStartTime = System.nanoTime();
+            for (int i = 0; i < DATASET_SIZE; i++) {
+                set.contains(Long.toString(randomKeys[i]));
+            }
+            long readEndTime = System.nanoTime();
+            readTimeMs = (readEndTime - readStartTime) / 1_000_000;
+
+            randomKeys = null;
+
+            forceGC();
+            long usedMemory = getCurrentHeapMemory();
+            heapUsed = usedMemory - baselineMemory;
+
+            System.out.printf("  低堆String Set 包含 %d 个条目%n", set.size());
+            System.out.printf("  写入耗时: %d ms%n", writeTimeMs);
+            System.out.printf("  读取耗时: %d ms%n", readTimeMs);
+            System.out.printf("  堆内存占用: %.2f MB%n", heapUsed / 1024.0 / 1024.0);
+        } finally {
+            if (set != null) {
+                set.close();
+            }
+            forceGC();
+        }
+
+        return new TestResult("RogueSet.Mmap低堆String模式", heapUsed, writeTimeMs, readTimeMs);
     }
 
     /**
@@ -664,7 +797,21 @@ public class PerformanceComparisonTest {
      */
     private static long getCurrentHeapMemory() {
         MemoryMXBean memoryBean = ManagementFactory.getMemoryMXBean();
-        return memoryBean.getHeapMemoryUsage().getUsed();
+        // 多次采样取中位数，降低 GC/JIT 抖动带来的瞬时噪声。
+        final int samples = 7;
+        long[] values = new long[samples];
+        for (int i = 0; i < samples; i++) {
+            values[i] = memoryBean.getHeapMemoryUsage().getUsed();
+            if (i < samples - 1) {
+                try {
+                    Thread.sleep(10);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                }
+            }
+        }
+        Arrays.sort(values);
+        return values[samples / 2];
     }
 
     /**
@@ -708,6 +855,8 @@ public class PerformanceComparisonTest {
             "FastUtil模式",
             "RogueMap.Mmap临时文件模式",
             "RogueMap.Mmap持久化模式",
+            "RogueMap.Mmap低堆String模式",
+            "RogueSet.Mmap低堆String模式",
             "MapDB.OffHeap模式",
             "MapDB.临时文件模式",
             "MapDB.持久化模式"

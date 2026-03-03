@@ -43,6 +43,8 @@ public class MmapAllocator implements Allocator {
      * 初始化后 segments 和 segmentFileOffsets 长度始终相等。
      */
     private final List<Long> segmentFileOffsets;
+    private volatile long[] segmentFileOffsetsSnapshot;
+    private volatile long[] segmentBaseAddressesSnapshot;
 
     private final RandomAccessFile raf;
     private final FileChannel channel;
@@ -180,6 +182,18 @@ public class MmapAllocator implements Allocator {
             offset += size;
             remaining -= size;
         }
+        refreshSegmentSnapshots();
+    }
+
+    private void refreshSegmentSnapshots() {
+        long[] offsets = new long[segmentFileOffsets.size()];
+        long[] bases = new long[segmentBaseAddresses.size()];
+        for (int i = 0; i < segmentFileOffsets.size(); i++) {
+            offsets[i] = segmentFileOffsets.get(i);
+            bases[i] = segmentBaseAddresses.get(i);
+        }
+        this.segmentFileOffsetsSnapshot = offsets;
+        this.segmentBaseAddressesSnapshot = bases;
     }
 
     /**
@@ -501,6 +515,30 @@ public class MmapAllocator implements Allocator {
     }
 
     /**
+     * 快速路径：基于快照数组做无锁偏移转换。
+     * 若快照不命中则回退到 getAddressForOffset()。
+     */
+    public long getAddressForOffsetFast(long fileOffset) {
+        long[] offsets = segmentFileOffsetsSnapshot;
+        long[] bases = segmentBaseAddressesSnapshot;
+        if (offsets == null || bases == null || offsets.length == 0 || bases.length != offsets.length) {
+            return getAddressForOffset(fileOffset);
+        }
+
+        int segIdx = findSegmentIndex(offsets, fileOffset);
+        if (segIdx < 0 || segIdx >= offsets.length) {
+            return getAddressForOffset(fileOffset);
+        }
+
+        long segStart = offsets[segIdx];
+        long segEnd = (segIdx + 1 < offsets.length) ? offsets[segIdx + 1] : fileSize;
+        if (fileOffset < segStart || fileOffset >= segEnd) {
+            return getAddressForOffset(fileOffset);
+        }
+        return bases[segIdx] + (fileOffset - segStart);
+    }
+
+    /**
      * 根据物理内存地址反向计算文件偏移量。
      * 用于在序列化时将物理地址转换为可持久化的文件偏移量。
      *
@@ -526,6 +564,42 @@ public class MmapAllocator implements Allocator {
         } finally {
             readLock.unlock();
         }
+    }
+
+    /**
+     * 快速路径：基于快照数组做无锁地址反查。
+     * 若快照不命中则回退到 getFileOffsetForAddress()。
+     */
+    public long getFileOffsetForAddressFast(long physAddr) {
+        long[] offsets = segmentFileOffsetsSnapshot;
+        long[] bases = segmentBaseAddressesSnapshot;
+        if (offsets == null || bases == null || offsets.length == 0 || bases.length != offsets.length) {
+            return getFileOffsetForAddress(physAddr);
+        }
+
+        for (int i = 0; i < bases.length; i++) {
+            long segBase = bases[i];
+            long segStart = offsets[i];
+            long segSize = (i + 1 < offsets.length) ? offsets[i + 1] - segStart : fileSize - segStart;
+            if (physAddr >= segBase && physAddr < segBase + segSize) {
+                return segStart + (physAddr - segBase);
+            }
+        }
+        return getFileOffsetForAddress(physAddr);
+    }
+
+    private int findSegmentIndex(long[] offsets, long offset) {
+        int lo = 0;
+        int hi = offsets.length - 1;
+        while (lo < hi) {
+            int mid = (lo + hi + 1) >>> 1;
+            if (offsets[mid] <= offset) {
+                lo = mid;
+            } else {
+                hi = mid - 1;
+            }
+        }
+        return lo;
     }
 
     /**

@@ -1,11 +1,15 @@
 package com.yomahub.roguemap;
 
+import com.yomahub.roguemap.index.LowHeapOptions;
 import com.yomahub.roguemap.memory.Allocator;
 import com.yomahub.roguemap.memory.MmapAllocator;
 import com.yomahub.roguemap.memory.UnsafeOps;
 import com.yomahub.roguemap.serialization.Codec;
+import com.yomahub.roguemap.serialization.StringCodec;
+import com.yomahub.roguemap.set.LowHeapStringSetIndex;
 import com.yomahub.roguemap.set.SetAddResult;
 import com.yomahub.roguemap.set.SetIndex;
+import com.yomahub.roguemap.set.SetIndexStore;
 import com.yomahub.roguemap.set.SetIterator;
 import com.yomahub.roguemap.set.SetRemoveResult;
 import com.yomahub.roguemap.storage.MmapFileHeader;
@@ -45,17 +49,19 @@ import java.util.Iterator;
  */
 public class RogueSet<E> implements Iterable<E>, AutoCloseable {
 
-    private final SetIndex<E> index;
+    private final SetIndexStore<E> index;
     private final StorageEngine storage;
     private final Codec<E> elementCodec;
     private final Allocator allocator;
+    private final LowHeapOptions lowHeapOptions;
 
-    private RogueSet(SetIndex<E> index, StorageEngine storage,
-                     Codec<E> elementCodec, Allocator allocator) {
+    private RogueSet(SetIndexStore<E> index, StorageEngine storage,
+                     Codec<E> elementCodec, Allocator allocator, LowHeapOptions lowHeapOptions) {
         this.index = index;
         this.storage = storage;
         this.elementCodec = elementCodec;
         this.allocator = allocator;
+        this.lowHeapOptions = lowHeapOptions;
     }
 
     /**
@@ -203,9 +209,20 @@ public class RogueSet<E> implements Iterable<E>, AutoCloseable {
         long deadBytes = dataRegion > 0 ? dataRegion - liveBytes[0] : 0;
         double fragmentationRatio = dataRegion > 0 ? (double) deadBytes / dataRegion : 0.0;
 
+        long indexHeapBytesEstimate = 0L;
+        long indexMmapBytes = 0L;
+        double avgKeyBytes = 0.0;
+        if (index instanceof LowHeapStringSetIndex) {
+            LowHeapStringSetIndex lowHeapSetIndex = (LowHeapStringSetIndex) index;
+            indexHeapBytesEstimate = lowHeapSetIndex.estimateHeapBytes();
+            indexMmapBytes = lowHeapSetIndex.getIndexMmapBytes();
+            avgKeyBytes = lowHeapSetIndex.getAverageElementBytes();
+        }
+
         return new StorageMetrics(totalFileSize, usedBytes, availableBytes,
                 entryCount, liveBytes[0], deadBytes, 0L, fragmentationRatio,
-                mmapAllocator.isTemporary(), mmapAllocator.getFilePath());
+                mmapAllocator.isTemporary(), mmapAllocator.getFilePath(),
+                indexHeapBytesEstimate, indexMmapBytes, avgKeyBytes);
     }
 
     /**
@@ -255,7 +272,9 @@ public class RogueSet<E> implements Iterable<E>, AutoCloseable {
         MmapAllocator newAllocator = new MmapAllocator(tempPath, newAllocateSize, false);
         try {
             long newBaseAddress = newAllocator.getBaseAddress();
-            SetIndex<E> newIndex = new SetIndex<>(elementCodec, 64, 16);
+            int indexType = getIndexType(index);
+            SetIndexStore<E> newIndex = createIndexByType(indexType, elementCodec, newAllocator,
+                    64, 16, lowHeapOptions);
 
             // 2. 复制所有活跃元素到新文件
             index.forEach((element, address, size) -> {
@@ -281,7 +300,7 @@ public class RogueSet<E> implements Iterable<E>, AutoCloseable {
             header.setMagicNumber(MmapFileHeader.MAGIC_NUMBER);
             header.setVersion(MmapFileHeader.VERSION);
             header.setDataType(MmapFileHeader.DATA_TYPE_SET);
-            header.setIndexType(0);
+            header.setIndexType(indexType);
             header.setEntryCount(newIndex.size());
             header.setCurrentOffset(currentDataOffset);
             header.setIndexOffset(indexOffset);
@@ -310,11 +329,15 @@ public class RogueSet<E> implements Iterable<E>, AutoCloseable {
         }
 
         // 7. 重新打开
-        return RogueSet.<E>mmap()
+        MmapBuilder<E> reopenBuilder = RogueSet.<E>mmap()
                 .persistent(filePath)
                 .allocateSize(newAllocateSize)
                 .elementCodec(elementCodec)
-                .build();
+                .applyLowHeapModeIf(index instanceof LowHeapStringSetIndex);
+        if (lowHeapOptions != null) {
+            reopenBuilder.lowHeapOptions(lowHeapOptions);
+        }
+        return reopenBuilder.build();
     }
 
     @Override
@@ -379,13 +402,40 @@ public class RogueSet<E> implements Iterable<E>, AutoCloseable {
         header.setMagicNumber(MmapFileHeader.MAGIC_NUMBER);
         header.setVersion(MmapFileHeader.VERSION);
         header.setDataType(MmapFileHeader.DATA_TYPE_SET);
-        header.setIndexType(0); // Set使用默认类型
+        header.setIndexType(getIndexType(index));
         header.setEntryCount(index.size());
         header.setCurrentOffset(currentDataOffset);
         header.setIndexOffset(indexOffset);
         header.setIndexSize(indexSize);
 
         mmapAllocator.writeHeader(header);
+    }
+
+    private int getIndexType(SetIndexStore<E> index) {
+        if (index instanceof LowHeapStringSetIndex) {
+            return 4;
+        }
+        return 0;
+    }
+
+    @SuppressWarnings("unchecked")
+    private static <E> SetIndexStore<E> createIndexByType(int indexType, Codec<E> elementCodec,
+                                                           MmapAllocator mmapAllocator,
+                                                           int segmentCount, int initialCapacity,
+                                                           LowHeapOptions lowHeapOptions) {
+        if (indexType == 0) {
+            return new SetIndex<>(elementCodec, segmentCount, initialCapacity);
+        } else if (indexType == 4) {
+            if (mmapAllocator == null) {
+                throw new IllegalStateException("LowHeapStringSetIndex 需要 MmapAllocator");
+            }
+            if (elementCodec != StringCodec.INSTANCE) {
+                throw new IllegalStateException("LowHeapStringSetIndex 仅支持 StringCodec.INSTANCE");
+            }
+            return (SetIndexStore<E>) new LowHeapStringSetIndex(
+                    mmapAllocator, lowHeapOptions != null ? lowHeapOptions : LowHeapOptions.defaults(), initialCapacity);
+        }
+        throw new IllegalStateException("未知的 Set 索引类型: " + indexType);
     }
 
     /**
@@ -413,6 +463,8 @@ public class RogueSet<E> implements Iterable<E>, AutoCloseable {
         private boolean autoExpand = false;
         private double expandFactor = 2.0;
         private long maxFileSize = 0L;
+        private boolean useLowHeapIndex = false;
+        private LowHeapOptions lowHeapOptions = LowHeapOptions.defaults();
 
         private MmapBuilder() {
         }
@@ -537,6 +589,32 @@ public class RogueSet<E> implements Iterable<E>, AutoCloseable {
         }
 
         /**
+         * 使用低堆 String 索引模式（仅支持 StringCodec.INSTANCE）。
+         */
+        public MmapBuilder<E> lowHeapIndex() {
+            this.useLowHeapIndex = true;
+            return this;
+        }
+
+        /**
+         * 设置低堆模式参数。
+         */
+        public MmapBuilder<E> lowHeapOptions(LowHeapOptions options) {
+            if (options == null) {
+                throw new IllegalArgumentException("lowHeapOptions 不能为 null");
+            }
+            this.lowHeapOptions = options;
+            return this;
+        }
+
+        MmapBuilder<E> applyLowHeapModeIf(boolean enabled) {
+            if (enabled) {
+                this.useLowHeapIndex = true;
+            }
+            return this;
+        }
+
+        /**
          * 构建 RogueSet 实例
          *
          * @return 新的 RogueSet
@@ -557,11 +635,11 @@ public class RogueSet<E> implements Iterable<E>, AutoCloseable {
             Allocator allocator = mmapAllocator;
             StorageEngine storage = new MmapStorage(mmapAllocator);
 
-            SetIndex<E> index;
+            SetIndexStore<E> index;
 
             // 临时文件模式：总是创建新索引
             if (isTemporary) {
-                index = new SetIndex<>(elementCodec, segmentCount, initialCapacity);
+                index = createNewIndex(elementCodec, mmapAllocator);
             } else {
                 // 持久化模式：检查是否是已存在的文件
                 if (mmapAllocator.isExistingFile()) {
@@ -573,26 +651,54 @@ public class RogueSet<E> implements Iterable<E>, AutoCloseable {
                         throw new IllegalStateException("文件类型不匹配：期望 SET，实际 " + header.getDataType());
                     }
 
-                    // 恢复 allocator 的 offset
-                    mmapAllocator.restoreOffset(header.getCurrentOffset());
+                    long recoveryOffset = header.getCurrentOffset();
+                    long indexSnapshotEnd = header.getIndexOffset() + header.getIndexSize();
+                    boolean needsLowHeapAllocation = (header.getIndexType() == 4) || useLowHeapIndex;
+
+                    if (needsLowHeapAllocation) {
+                        mmapAllocator.restoreOffset(Math.max(recoveryOffset, indexSnapshotEnd));
+                    } else {
+                        mmapAllocator.restoreOffset(recoveryOffset);
+                    }
 
                     // 创建索引并恢复数据
-                    index = new SetIndex<>(elementCodec, segmentCount, initialCapacity);
+                    if (useLowHeapIndex && header.getIndexType() != 4) {
+                        throw new IllegalStateException(
+                                "lowHeapIndex() 不兼容旧索引类型（indexType=" + header.getIndexType() +
+                                "）。请新建文件或先导出后重建。");
+                    }
+                    index = createIndexFromType(header.getIndexType(), elementCodec, mmapAllocator);
 
                     if (header.getIndexSize() > 0) {
                         long indexAddress = mmapAllocator.getAddressForOffset(header.getIndexOffset());
                         index.deserializeWithFileOffsets(indexAddress, (int) header.getIndexSize(), mmapAllocator);
                     }
 
+                    if (!needsLowHeapAllocation) {
+                        mmapAllocator.restoreOffset(recoveryOffset);
+                    }
+
                     // 标记文件为"已打开"（崩溃检测）
                     mmapAllocator.markOpen();
                 } else {
                     // 新文件模式
-                    index = new SetIndex<>(elementCodec, segmentCount, initialCapacity);
+                    index = createNewIndex(elementCodec, mmapAllocator);
                 }
             }
 
-            return new RogueSet<>(index, storage, elementCodec, allocator);
+            return new RogueSet<>(index, storage, elementCodec, allocator,
+                    useLowHeapIndex ? lowHeapOptions : null);
+        }
+
+        private SetIndexStore<E> createIndexFromType(int indexType, Codec<E> codec, MmapAllocator allocator) {
+            return RogueSet.createIndexByType(indexType, codec, allocator, segmentCount, initialCapacity, lowHeapOptions);
+        }
+
+        private SetIndexStore<E> createNewIndex(Codec<E> codec, MmapAllocator allocator) {
+            if (useLowHeapIndex) {
+                return RogueSet.createIndexByType(4, codec, allocator, segmentCount, initialCapacity, lowHeapOptions);
+            }
+            return RogueSet.createIndexByType(0, codec, allocator, segmentCount, initialCapacity, lowHeapOptions);
         }
     }
 }

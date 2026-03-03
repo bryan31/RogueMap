@@ -70,6 +70,14 @@ RogueMap<String, Long> persistentMap = RogueMap.<String, Long>mmap()
     .valueCodec(PrimitiveCodecs.LONG)
     .build();
 
+// Low-heap String key mode (index + key bytes in mmap)
+RogueMap<String, Long> lowHeapMap = RogueMap.<String, Long>mmap()
+    .persistent("data/lowheap.db")
+    .keyCodec(StringCodec.INSTANCE)
+    .valueCodec(PrimitiveCodecs.LONG)
+    .lowHeapIndex()
+    .build();
+
 // Transaction
 try (RogueMap.Transaction<String, Long> txn = map.beginTransaction()) {
     txn.put("key1", 1L);
@@ -80,6 +88,9 @@ try (RogueMap.Transaction<String, Long> txn = map.beginTransaction()) {
 // Iterate over all entries
 map.forEach((key, value) -> System.out.println(key + " = " + value));
 ```
+
+> Note: `lowHeapIndex()` is currently String-key-only, does not support `beginTransaction()`,
+> and does not auto-migrate legacy index formats.
 
 ### RogueList - Doubly-Linked List
 

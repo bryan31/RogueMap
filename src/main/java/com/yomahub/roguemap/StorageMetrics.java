@@ -18,11 +18,23 @@ public class StorageMetrics {
     private final double fragmentationRatio;
     private final boolean isTemporary;
     private final String filePath;
+    private final long indexHeapBytesEstimate;
+    private final long indexMmapBytes;
+    private final double avgKeyBytes;
 
     public StorageMetrics(long totalFileSize, long usedBytes, long availableBytes,
                           int entryCount, long liveDataBytes, long deadBytes,
                           long reclaimableBytes,
                           double fragmentationRatio, boolean isTemporary, String filePath) {
+        this(totalFileSize, usedBytes, availableBytes, entryCount, liveDataBytes, deadBytes, reclaimableBytes,
+                fragmentationRatio, isTemporary, filePath, 0L, 0L, 0.0);
+    }
+
+    public StorageMetrics(long totalFileSize, long usedBytes, long availableBytes,
+                          int entryCount, long liveDataBytes, long deadBytes,
+                          long reclaimableBytes,
+                          double fragmentationRatio, boolean isTemporary, String filePath,
+                          long indexHeapBytesEstimate, long indexMmapBytes, double avgKeyBytes) {
         this.totalFileSize = totalFileSize;
         this.usedBytes = usedBytes;
         this.availableBytes = availableBytes;
@@ -33,6 +45,9 @@ public class StorageMetrics {
         this.fragmentationRatio = fragmentationRatio;
         this.isTemporary = isTemporary;
         this.filePath = filePath;
+        this.indexHeapBytesEstimate = indexHeapBytesEstimate;
+        this.indexMmapBytes = indexMmapBytes;
+        this.avgKeyBytes = avgKeyBytes;
     }
 
     /** 预分配文件总大小（字节） */
@@ -68,6 +83,15 @@ public class StorageMetrics {
     /** 文件路径 */
     public String getFilePath() { return filePath; }
 
+    /** 索引在堆内的估算占用（字节） */
+    public long getIndexHeapBytesEstimate() { return indexHeapBytesEstimate; }
+
+    /** 索引在 mmap 区域占用（字节） */
+    public long getIndexMmapBytes() { return indexMmapBytes; }
+
+    /** 平均 key 字节长度（含长度头部） */
+    public double getAvgKeyBytes() { return avgKeyBytes; }
+
     /**
      * 判断是否需要压缩
      *
@@ -91,6 +115,9 @@ public class StorageMetrics {
                 ", fragmentationRatio=" + String.format("%.4f", fragmentationRatio) +
                 ", isTemporary=" + isTemporary +
                 ", filePath='" + filePath + '\'' +
+                ", indexHeapBytesEstimate=" + indexHeapBytesEstimate +
+                ", indexMmapBytes=" + indexMmapBytes +
+                ", avgKeyBytes=" + String.format("%.2f", avgKeyBytes) +
                 '}';
     }
 }

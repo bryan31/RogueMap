@@ -5,6 +5,8 @@ import com.yomahub.roguemap.index.Index;
 import com.yomahub.roguemap.index.IndexRemoveResult;
 import com.yomahub.roguemap.index.IndexUpdateResult;
 import com.yomahub.roguemap.index.IntPrimitiveIndex;
+import com.yomahub.roguemap.index.LowHeapOptions;
+import com.yomahub.roguemap.index.LowHeapStringIndex;
 import com.yomahub.roguemap.index.LongPrimitiveIndex;
 import com.yomahub.roguemap.index.SegmentedHashIndex;
 import com.yomahub.roguemap.memory.Allocator;
@@ -12,6 +14,7 @@ import com.yomahub.roguemap.memory.MmapAllocator;
 import com.yomahub.roguemap.memory.UnsafeOps;
 import com.yomahub.roguemap.serialization.Codec;
 import com.yomahub.roguemap.serialization.PrimitiveCodecs;
+import com.yomahub.roguemap.serialization.StringCodec;
 import com.yomahub.roguemap.storage.MmapFileHeader;
 import com.yomahub.roguemap.storage.MmapStorage;
 import com.yomahub.roguemap.storage.StorageEngine;
@@ -241,7 +244,7 @@ public class RogueMap<K, V> implements AutoCloseable {
         if (!(index instanceof com.yomahub.roguemap.index.SegmentedHashIndex)) {
             throw new UnsupportedOperationException(
                     "事务仅支持 SegmentedHashIndex（segmentedIndex 或默认索引）。" +
-                    "basicIndex() 和 primitiveIndex() 不支持事务。");
+                    "basicIndex()、primitiveIndex() 和 lowHeapIndex() 不支持事务。");
         }
         @SuppressWarnings("unchecked")
         com.yomahub.roguemap.index.SegmentedHashIndex<K> segIndex =
@@ -309,7 +312,7 @@ public class RogueMap<K, V> implements AutoCloseable {
             long newBaseAddress = newAllocator.getBaseAddress();
 
             // 2. 创建同类型的新索引
-            Index<K> newIndex = createIndexByType(indexType, keyCodec);
+            Index<K> newIndex = createIndexByType(indexType, keyCodec, newAllocator, LowHeapOptions.defaults());
 
             // 3. 复制所有活跃数据到新文件
             index.forEach((key, address, size) -> {
@@ -371,7 +374,8 @@ public class RogueMap<K, V> implements AutoCloseable {
     }
 
     @SuppressWarnings("unchecked")
-    private static <K> Index<K> createIndexByType(int indexType, Codec<K> keyCodec) {
+    private static <K> Index<K> createIndexByType(int indexType, Codec<K> keyCodec,
+            MmapAllocator mmapAllocator, LowHeapOptions lowHeapOptions) {
         if (indexType == 0) {
             return new HashIndex<>(keyCodec, 16);
         } else if (indexType == 1) {
@@ -380,6 +384,15 @@ public class RogueMap<K, V> implements AutoCloseable {
             return (Index<K>) new LongPrimitiveIndex(16);
         } else if (indexType == 3) {
             return (Index<K>) new IntPrimitiveIndex(16);
+        } else if (indexType == 4) {
+            if (mmapAllocator == null) {
+                throw new IllegalStateException("LowHeapStringIndex 需要 MmapAllocator");
+            }
+            if (keyCodec != StringCodec.INSTANCE) {
+                throw new IllegalStateException("LowHeapStringIndex 仅支持 StringCodec.INSTANCE");
+            }
+            return (Index<K>) new LowHeapStringIndex(mmapAllocator,
+                    lowHeapOptions != null ? lowHeapOptions : LowHeapOptions.defaults(), 16);
         }
         return new SegmentedHashIndex<>(keyCodec, 64, 16);
     }
@@ -414,9 +427,20 @@ public class RogueMap<K, V> implements AutoCloseable {
         long deadBytes = dataRegion > 0 ? dataRegion - liveBytes[0] : 0;
         double fragmentationRatio = dataRegion > 0 ? (double) deadBytes / dataRegion : 0.0;
 
+        long indexHeapBytesEstimate = 0L;
+        long indexMmapBytes = 0L;
+        double avgKeyBytes = 0.0;
+        if (index instanceof LowHeapStringIndex) {
+            LowHeapStringIndex lowHeapIndex = (LowHeapStringIndex) index;
+            indexHeapBytesEstimate = lowHeapIndex.estimateHeapBytes();
+            indexMmapBytes = lowHeapIndex.getIndexMmapBytes();
+            avgKeyBytes = lowHeapIndex.getAverageKeyBytes();
+        }
+
         return new StorageMetrics(totalFileSize, usedBytes, availableBytes,
                 entryCount, liveBytes[0], deadBytes, 0L, fragmentationRatio,
-                mmapAllocator.isTemporary(), mmapAllocator.getFilePath());
+                mmapAllocator.isTemporary(), mmapAllocator.getFilePath(),
+                indexHeapBytesEstimate, indexMmapBytes, avgKeyBytes);
     }
 
     @Override
@@ -513,6 +537,8 @@ public class RogueMap<K, V> implements AutoCloseable {
             return 2;
         } else if (index instanceof IntPrimitiveIndex) {
             return 3;
+        } else if (index instanceof LowHeapStringIndex) {
+            return 4;
         }
         // 未知索引类型，返回默认值
         return 0;
@@ -543,8 +569,10 @@ public class RogueMap<K, V> implements AutoCloseable {
         protected Codec<V> valueCodec;
         protected boolean useSegmentedIndex = true;
         protected boolean usePrimitiveIndex = false;
+        protected boolean useLowHeapIndex = false;
         protected int segmentCount = 64;
         protected int initialCapacity = 16;
+        protected LowHeapOptions lowHeapOptions = LowHeapOptions.defaults();
 
         protected BaseBuilder() {
         }
@@ -593,6 +621,7 @@ public class RogueMap<K, V> implements AutoCloseable {
         public B basicIndex() {
             this.useSegmentedIndex = false;
             this.usePrimitiveIndex = false;
+            this.useLowHeapIndex = false;
             return (B) this;
         }
 
@@ -605,6 +634,7 @@ public class RogueMap<K, V> implements AutoCloseable {
         public B segmentedIndex(int segmentCount) {
             this.useSegmentedIndex = true;
             this.usePrimitiveIndex = false;
+            this.useLowHeapIndex = false;
             this.segmentCount = segmentCount;
             return (B) this;
         }
@@ -618,18 +648,40 @@ public class RogueMap<K, V> implements AutoCloseable {
         public B primitiveIndex() {
             this.usePrimitiveIndex = true;
             this.useSegmentedIndex = false;
+            this.useLowHeapIndex = false;
+            return (B) this;
+        }
+
+        /**
+         * 使用低堆 String 索引模式（仅支持 StringCodec）
+         */
+        public B lowHeapIndex() {
+            this.useLowHeapIndex = true;
+            this.usePrimitiveIndex = false;
+            this.useSegmentedIndex = false;
+            return (B) this;
+        }
+
+        /**
+         * 设置低堆模式参数
+         */
+        public B lowHeapOptions(LowHeapOptions options) {
+            if (options == null) {
+                throw new IllegalArgumentException("lowHeapOptions 不能为 null");
+            }
+            this.lowHeapOptions = options;
             return (B) this;
         }
 
         /**
          * 根据索引类型创建索引（用于恢复）
          *
-         * @param indexType 索引类型（0=HashIndex, 1=SegmentedHashIndex, 2=LongPrimitiveIndex, 3=IntPrimitiveIndex）
+         * @param indexType 索引类型（0=HashIndex, 1=SegmentedHashIndex, 2=LongPrimitiveIndex, 3=IntPrimitiveIndex, 4=LowHeapStringIndex）
          * @param keyCodec 键编解码器
          * @return 索引实例
          */
         @SuppressWarnings("unchecked")
-        protected Index<K> createIndexFromType(int indexType, Codec<K> keyCodec) {
+        protected Index<K> createIndexFromType(int indexType, Codec<K> keyCodec, MmapAllocator mmapAllocator) {
             if (indexType == 0) {
                 return new HashIndex<>(keyCodec, initialCapacity);
             } else if (indexType == 1) {
@@ -638,6 +690,14 @@ public class RogueMap<K, V> implements AutoCloseable {
                 return (Index<K>) new LongPrimitiveIndex(initialCapacity);
             } else if (indexType == 3) {
                 return (Index<K>) new IntPrimitiveIndex(initialCapacity);
+            } else if (indexType == 4) {
+                if (mmapAllocator == null) {
+                    throw new IllegalStateException("LowHeapStringIndex 需要 MmapAllocator");
+                }
+                if (keyCodec != StringCodec.INSTANCE) {
+                    throw new IllegalStateException("LowHeapStringIndex 仅支持 StringCodec.INSTANCE");
+                }
+                return (Index<K>) new LowHeapStringIndex(mmapAllocator, lowHeapOptions, initialCapacity);
             }
             throw new IllegalStateException("未知的索引类型: " + indexType);
         }
@@ -649,8 +709,16 @@ public class RogueMap<K, V> implements AutoCloseable {
          * @return 索引实例
          */
         @SuppressWarnings("unchecked")
-        protected Index<K> createNewIndex(Codec<K> keyCodec) {
-            if (usePrimitiveIndex) {
+        protected Index<K> createNewIndex(Codec<K> keyCodec, MmapAllocator mmapAllocator) {
+            if (useLowHeapIndex) {
+                if (mmapAllocator == null) {
+                    throw new IllegalStateException("LowHeapStringIndex 需要 MmapAllocator");
+                }
+                if (keyCodec != StringCodec.INSTANCE) {
+                    throw new IllegalStateException("lowHeapIndex() 仅支持 StringCodec.INSTANCE");
+                }
+                return (Index<K>) new LowHeapStringIndex(mmapAllocator, lowHeapOptions, initialCapacity);
+            } else if (usePrimitiveIndex) {
                 // 使用原始类型索引（仅支持Long/Integer键）
                 if (keyCodec == PrimitiveCodecs.LONG) {
                     return (Index<K>) new LongPrimitiveIndex(initialCapacity);
@@ -801,30 +869,47 @@ public class RogueMap<K, V> implements AutoCloseable {
 
             // 临时文件模式：总是创建新索引（不恢复）
             if (isTemporary) {
-                index = createNewIndex(keyCodec);
+                index = createNewIndex(keyCodec, mmapAllocator);
             } else {
                 // 持久化模式：检查是否是已存在的文件
                 if (mmapAllocator.isExistingFile()) {
                     // 恢复模式
                     com.yomahub.roguemap.storage.MmapFileHeader header = mmapAllocator.readHeader();
 
-                    // 恢复 allocator 的 offset
-                    mmapAllocator.restoreOffset(header.getCurrentOffset());
+                    long recoveryOffset = header.getCurrentOffset();
+                    long indexSnapshotEnd = header.getIndexOffset() + header.getIndexSize();
+                    boolean needsLowHeapAllocation = (header.getIndexType() == 4) || useLowHeapIndex;
+
+                    // 低堆索引在构造时会分配槽位内存，先把 offset 放到索引快照之后，避免覆盖快照。
+                    if (needsLowHeapAllocation) {
+                        mmapAllocator.restoreOffset(Math.max(recoveryOffset, indexSnapshotEnd));
+                    } else {
+                        mmapAllocator.restoreOffset(recoveryOffset);
+                    }
 
                     // 创建索引并恢复数据
-                    index = createIndexFromType(header.getIndexType(), keyCodec);
-
+                    if (useLowHeapIndex && header.getIndexType() != 4) {
+                        throw new IllegalStateException(
+                                "lowHeapIndex() 不兼容旧索引类型（indexType=" + header.getIndexType() +
+                                "）。请新建文件或先导出后重建。");
+                    }
+                    index = createIndexFromType(header.getIndexType(), keyCodec, mmapAllocator);
                     if (header.getIndexSize() > 0) {
                         long baseAddress = mmapAllocator.getBaseAddress();
                         long indexAddress = mmapAllocator.getAddressForOffset(header.getIndexOffset());
                         index.deserializeWithOffsets(indexAddress, (int) header.getIndexSize(), baseAddress);
                     }
 
+                    // 非低堆索引恢复后，继续沿用 header.currentOffset 作为数据写入起点。
+                    if (!needsLowHeapAllocation) {
+                        mmapAllocator.restoreOffset(recoveryOffset);
+                    }
+
                     // 标记文件为"已打开"（崩溃检测）
                     mmapAllocator.markOpen();
                 } else {
                     // 新文件模式
-                    index = createNewIndex(keyCodec);
+                    index = createNewIndex(keyCodec, mmapAllocator);
                 }
             }
 

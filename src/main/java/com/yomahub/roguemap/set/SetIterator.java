@@ -16,7 +16,7 @@ import java.util.NoSuchElementException;
  */
 public class SetIterator<E> implements Iterator<E> {
 
-    private final SetIndex<E> index;
+    private final SetIndexStore<E> index;
     private final Codec<E> elementCodec;
     private final int totalSegments;
     private final int expectedModCount;
@@ -25,7 +25,7 @@ public class SetIterator<E> implements Iterator<E> {
     private List<E> currentBatch;
     private int batchIdx;
 
-    public SetIterator(SetIndex<E> index, Codec<E> elementCodec) {
+    public SetIterator(SetIndexStore<E> index, Codec<E> elementCodec) {
         this.index = index;
         this.elementCodec = elementCodec;
         this.totalSegments = index.getSegmentCount();

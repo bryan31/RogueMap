@@ -14,7 +14,8 @@ import java.util.zip.CRC32;
  * - Magic Number (4 bytes): 0x524D4150 "RMAP"
  * - Version (4 bytes): 1
  * - Data Type (4 bytes): 数据结构类型
- * - Index Type (4 bytes): 0=HashIndex, 1=SegmentedHashIndex
+ * - Index Type (4 bytes): 0=HashIndex, 1=SegmentedHashIndex, 2=LongPrimitiveIndex,
+ *   3=IntPrimitiveIndex, 4=LowHeapStringIndex
  * - Entry Count (4 bytes)
  * - Current Offset (8 bytes)
  * - Index Offset (8 bytes)
@@ -67,7 +68,7 @@ public class MmapFileHeader {
     private int magicNumber;
     private int version;
     private int dataType;      // 数据结构类型
-    private int indexType;      // 0=HashIndex, 1=SegmentedHashIndex
+    private int indexType;      // 0=HashIndex, 1=SegmentedHashIndex, 2/3=Primitive, 4=LowHeapStringIndex
     private int entryCount;     // 条目数量
     private long currentOffset; // 当前分配偏移量
     private long indexOffset;   // 索引数据起始位置
