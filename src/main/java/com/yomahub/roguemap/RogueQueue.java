@@ -12,6 +12,7 @@ import com.yomahub.roguemap.storage.MmapStorage;
 import com.yomahub.roguemap.storage.StorageEngine;
 
 import java.io.File;
+import java.util.concurrent.TimeUnit;
 
 /**
  * RogueQueue - 基于内存映射文件的高性能队列
@@ -49,13 +50,26 @@ public class RogueQueue<E> implements AutoCloseable {
     private final Allocator allocator;
     private final MmapAllocator mmapAllocator;
     private final Codec<E> elementCodec;
+    private final AutoCheckpointManager autoCheckpointManager;
 
     private RogueQueue(QueueStorage<E> storage, Allocator allocator,
-                       MmapAllocator mmapAllocator, Codec<E> elementCodec) {
+                       MmapAllocator mmapAllocator, Codec<E> elementCodec,
+                       long autoCheckpointInterval, int autoCheckpointOperations) {
         this.storage = storage;
         this.allocator = allocator;
         this.mmapAllocator = mmapAllocator;
         this.elementCodec = elementCodec;
+
+        // 创建并启动自动 checkpoint（仅持久化模式）
+        if (autoCheckpointInterval > 0 || autoCheckpointOperations > 0) {
+            this.autoCheckpointManager = new AutoCheckpointManager(
+                    this::checkpoint,
+                    autoCheckpointInterval,
+                    autoCheckpointOperations);
+            this.autoCheckpointManager.start();
+        } else {
+            this.autoCheckpointManager = null;
+        }
     }
 
     /**
@@ -65,7 +79,14 @@ public class RogueQueue<E> implements AutoCloseable {
      * @return 如果成功返回true，如果队列已满（仅环形队列）返回false
      */
     public boolean offer(E element) {
-        return storage.offer(element);
+        boolean result = storage.offer(element);
+
+        // 触发自动 checkpoint（仅在成功入队时）
+        if (result && autoCheckpointManager != null) {
+            autoCheckpointManager.onWriteOperation();
+        }
+
+        return result;
     }
 
     /**
@@ -74,7 +95,14 @@ public class RogueQueue<E> implements AutoCloseable {
      * @return 队首元素，如果队列为空返回null
      */
     public E poll() {
-        return storage.poll();
+        E element = storage.poll();
+
+        // 触发自动 checkpoint（仅在成功出队时）
+        if (element != null && autoCheckpointManager != null) {
+            autoCheckpointManager.onWriteOperation();
+        }
+
+        return element;
     }
 
     /**
@@ -127,6 +155,30 @@ public class RogueQueue<E> implements AutoCloseable {
         if (allocator instanceof MmapAllocator) {
             ((MmapAllocator) allocator).flush();
         }
+    }
+
+    /**
+     * 将当前元数据持久化到磁盘（检查点）
+     *
+     * <p>调用此方法后，即使进程崩溃（不调用 close()），下次打开文件时也能恢复到
+     * 最近一次 checkpoint 时的状态。checkpoint 之后写入的数据在崩溃后会丢失。
+     *
+     * <p>建议在写入一定量数据后定期调用（例如每 1000 次 offer 或每 5 秒），
+     * 以控制崩溃时的数据丢失窗口。
+     *
+     * <p>注意：每次 checkpoint 会消耗一定的文件空间用于存储元数据快照，
+     * 可通过 compact() 回收。仅 persistent 模式有效。
+     */
+    public void checkpoint() {
+        if (mmapAllocator == null || mmapAllocator.isTemporary()) {
+            return;
+        }
+
+        // 序列化元数据到当前数据尾部
+        saveMmapMetadata();
+
+        // 强制刷盘确保持久化
+        mmapAllocator.flush();
     }
 
     /**
@@ -272,6 +324,15 @@ public class RogueQueue<E> implements AutoCloseable {
             primaryException = e;
         }
 
+        // 1.5 停止自动 checkpoint
+        try {
+            if (autoCheckpointManager != null) {
+                autoCheckpointManager.stop();
+            }
+        } catch (Exception e) {
+            if (primaryException == null) primaryException = e;
+        }
+
         // 2. 关闭 storage（storage.close() 会调用 clear()，释放内部状态）
         try {
             storage.close();
@@ -342,6 +403,8 @@ public class RogueQueue<E> implements AutoCloseable {
         private boolean autoExpand = false;
         private double expandFactor = 2.0;
         private long maxFileSize = 0L;
+        private long autoCheckpointInterval = -1;  // 毫秒，-1 表示未配置
+        private int autoCheckpointOperations = -1; // -1 表示未配置
 
         // 队列类型
         private QueueType queueType = QueueType.LINKED;
@@ -458,6 +521,48 @@ public class RogueQueue<E> implements AutoCloseable {
         }
 
         /**
+         * 设置自动 checkpoint 的时间间隔
+         *
+         * <p>启用后，每隔指定时间自动调用 checkpoint()，确保数据持久化。
+         * 仅对持久化模式（persistent）有效，临时模式（temporary）忽略此配置。
+         *
+         * <p>可与 {@link #autoCheckpoint(int)} 同时配置，任一条件满足即触发 checkpoint。
+         *
+         * @param interval 时间间隔
+         * @param unit     时间单位
+         * @return 此构建器
+         */
+        public MmapBuilder<E> autoCheckpoint(long interval, TimeUnit unit) {
+            if (interval <= 0) {
+                throw new IllegalArgumentException("interval 必须为正数");
+            }
+            if (unit == null) {
+                throw new IllegalArgumentException("unit 不能为 null");
+            }
+            this.autoCheckpointInterval = unit.toMillis(interval);
+            return this;
+        }
+
+        /**
+         * 设置自动 checkpoint 的操作次数阈值
+         *
+         * <p>启用后，每 N 次写操作（offer/poll）自动调用 checkpoint()，确保数据持久化。
+         * 仅对持久化模式（persistent）有效，临时模式（temporary）忽略此配置。
+         *
+         * <p>可与 {@link #autoCheckpoint(long, TimeUnit)} 同时配置，任一条件满足即触发 checkpoint。
+         *
+         * @param operationCount 操作次数阈值
+         * @return 此构建器
+         */
+        public MmapBuilder<E> autoCheckpoint(int operationCount) {
+            if (operationCount <= 0) {
+                throw new IllegalArgumentException("operationCount 必须为正数");
+            }
+            this.autoCheckpointOperations = operationCount;
+            return this;
+        }
+
+        /**
          * 构建 RogueQueue 实例
          */
         public RogueQueue<E> build() {
@@ -507,7 +612,11 @@ public class RogueQueue<E> implements AutoCloseable {
                 }
             }
 
-            return new RogueQueue<>(storage, allocator, mmapAllocator, elementCodec);
+            // 仅持久化模式启用自动 checkpoint
+            long checkpointInterval = isTemporary ? -1 : autoCheckpointInterval;
+            int checkpointOperations = isTemporary ? -1 : autoCheckpointOperations;
+
+            return new RogueQueue<>(storage, allocator, mmapAllocator, elementCodec, checkpointInterval, checkpointOperations);
         }
 
         @SuppressWarnings("unchecked")

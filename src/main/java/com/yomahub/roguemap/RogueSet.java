@@ -18,6 +18,7 @@ import com.yomahub.roguemap.storage.StorageEngine;
 
 import java.io.File;
 import java.util.Iterator;
+import java.util.concurrent.TimeUnit;
 
 /**
  * RogueSet - 基于内存映射文件的高性能集合
@@ -54,14 +55,27 @@ public class RogueSet<E> implements Iterable<E>, AutoCloseable {
     private final Codec<E> elementCodec;
     private final Allocator allocator;
     private final LowHeapOptions lowHeapOptions;
+    private final AutoCheckpointManager autoCheckpointManager;
 
     private RogueSet(SetIndexStore<E> index, StorageEngine storage,
-                     Codec<E> elementCodec, Allocator allocator, LowHeapOptions lowHeapOptions) {
+                     Codec<E> elementCodec, Allocator allocator, LowHeapOptions lowHeapOptions,
+                     long autoCheckpointInterval, int autoCheckpointOperations) {
         this.index = index;
         this.storage = storage;
         this.elementCodec = elementCodec;
         this.allocator = allocator;
         this.lowHeapOptions = lowHeapOptions;
+
+        // 创建并启动自动 checkpoint（仅持久化模式）
+        if (autoCheckpointInterval > 0 || autoCheckpointOperations > 0) {
+            this.autoCheckpointManager = new AutoCheckpointManager(
+                    this::checkpoint,
+                    autoCheckpointInterval,
+                    autoCheckpointOperations);
+            this.autoCheckpointManager.start();
+        } else {
+            this.autoCheckpointManager = null;
+        }
     }
 
     /**
@@ -100,6 +114,11 @@ public class RogueSet<E> implements Iterable<E>, AutoCloseable {
                 return false;
             }
 
+            // 触发自动 checkpoint
+            if (autoCheckpointManager != null) {
+                autoCheckpointManager.onWriteOperation();
+            }
+
             return true;
         } catch (Exception e) {
             // 异常时释放内存
@@ -136,6 +155,12 @@ public class RogueSet<E> implements Iterable<E>, AutoCloseable {
 
         // 释放内存
         allocator.free(result.getAddress(), result.getSize());
+
+        // 触发自动 checkpoint
+        if (autoCheckpointManager != null) {
+            autoCheckpointManager.onWriteOperation();
+        }
+
         return true;
     }
 
@@ -357,6 +382,15 @@ public class RogueSet<E> implements Iterable<E>, AutoCloseable {
             primaryException = e;
         }
 
+        // 1.5 停止自动 checkpoint
+        try {
+            if (autoCheckpointManager != null) {
+                autoCheckpointManager.stop();
+            }
+        } catch (Exception e) {
+            if (primaryException == null) primaryException = e;
+        }
+
         // 2. 关闭 index（不涉及 IO，无资源泄漏风险）
         try {
             index.close();
@@ -465,6 +499,8 @@ public class RogueSet<E> implements Iterable<E>, AutoCloseable {
         private long maxFileSize = 0L;
         private boolean useLowHeapIndex = false;
         private LowHeapOptions lowHeapOptions = LowHeapOptions.defaults();
+        private long autoCheckpointInterval = -1;  // 毫秒，-1 表示未配置
+        private int autoCheckpointOperations = -1; // -1 表示未配置
 
         private MmapBuilder() {
         }
@@ -615,6 +651,48 @@ public class RogueSet<E> implements Iterable<E>, AutoCloseable {
         }
 
         /**
+         * 设置自动 checkpoint 的时间间隔
+         *
+         * <p>启用后，每隔指定时间自动调用 checkpoint()，确保数据持久化。
+         * 仅对持久化模式（persistent）有效，临时模式（temporary）忽略此配置。
+         *
+         * <p>可与 {@link #autoCheckpoint(int)} 同时配置，任一条件满足即触发 checkpoint。
+         *
+         * @param interval 时间间隔
+         * @param unit     时间单位
+         * @return 此构建器
+         */
+        public MmapBuilder<E> autoCheckpoint(long interval, TimeUnit unit) {
+            if (interval <= 0) {
+                throw new IllegalArgumentException("interval 必须为正数");
+            }
+            if (unit == null) {
+                throw new IllegalArgumentException("unit 不能为 null");
+            }
+            this.autoCheckpointInterval = unit.toMillis(interval);
+            return this;
+        }
+
+        /**
+         * 设置自动 checkpoint 的操作次数阈值
+         *
+         * <p>启用后，每 N 次写操作（add/remove）自动调用 checkpoint()，确保数据持久化。
+         * 仅对持久化模式（persistent）有效，临时模式（temporary）忽略此配置。
+         *
+         * <p>可与 {@link #autoCheckpoint(long, TimeUnit)} 同时配置，任一条件满足即触发 checkpoint。
+         *
+         * @param operationCount 操作次数阈值
+         * @return 此构建器
+         */
+        public MmapBuilder<E> autoCheckpoint(int operationCount) {
+            if (operationCount <= 0) {
+                throw new IllegalArgumentException("operationCount 必须为正数");
+            }
+            this.autoCheckpointOperations = operationCount;
+            return this;
+        }
+
+        /**
          * 构建 RogueSet 实例
          *
          * @return 新的 RogueSet
@@ -686,8 +764,12 @@ public class RogueSet<E> implements Iterable<E>, AutoCloseable {
                 }
             }
 
+            // 仅持久化模式启用自动 checkpoint
+            long checkpointInterval = isTemporary ? -1 : autoCheckpointInterval;
+            int checkpointOperations = isTemporary ? -1 : autoCheckpointOperations;
+
             return new RogueSet<>(index, storage, elementCodec, allocator,
-                    useLowHeapIndex ? lowHeapOptions : null);
+                    useLowHeapIndex ? lowHeapOptions : null, checkpointInterval, checkpointOperations);
         }
 
         private SetIndexStore<E> createIndexFromType(int indexType, Codec<E> codec, MmapAllocator allocator) {
