@@ -12,7 +12,7 @@ mvn clean compile
 mvn test
 
 # Run a specific test class
-mvn test -Dtest=MmapFunctionalTest
+mvn test -Dtest=MapFunctionalTest
 
 # Run multiple test classes
 mvn test -Dtest=LinkedQueueFreeListTest,QueueCrashRecoveryTest
@@ -202,6 +202,20 @@ src/main/java/com/yomahub/roguemap/
 ├── memory/                    # MmapAllocator + UnsafeOps
 ├── serialization/             # Codec implementations + TypeReference
 └── util/                      # TempFileManager + TTLUtils
+```
+
+### Test Structure
+
+```
+src/test/java/com/yomahub/roguemap/
+├── map/            # RogueMap tests (functional, temporary, TTL, transaction, expansion, concurrency, low-heap index)
+├── list/           # RogueList tests (functional, concurrent)
+├── set/            # RogueSet tests (functional, concurrent, low-heap)
+├── queue/          # RogueQueue tests (functional, concurrent, crash recovery, free list)
+├── common/         # Cross-structure tests (checkpoint, compaction, metrics, fail-fast iterators, P0 fixes)
+├── memory/         # UnsafeOps tests
+├── serialization/  # KryoObjectCodec tests
+└── benchmark/      # Performance comparison tests + TestValueObject fixture
 ```
 
 ## Important Notes
