@@ -276,8 +276,10 @@ public class SegmentedHashIndex<K> implements Index<K> {
 
     /**
      * 补偿回滚：将已应用的 appliedCount 条操作逆向恢复。
-     * 注意：此方法在 finally 之前调用，不能再持有段锁（锁在外层释放）。
-     * 由于此路径极少触发，此处采用简单的串行加锁逐条撤销策略。
+     *
+     * <p><b>重要</b>：此方法在 applyBatch() 的 catch 块内调用，此时外层仍持有所有已获取的段写锁
+     * （锁在 finally 中释放）。由于 {@link StampedLock} 不可重入，此方法<b>不能</b>尝试重新获取锁，
+     * 而是直接操作 segment.map —— 这是安全的，因为调用者已持有对应段的写锁。
      */
     private void rollbackApplied(List<BatchEntry<K>> operations, IndexUpdateResult[] results, int appliedCount) {
         for (int i = appliedCount - 1; i >= 0; i--) {
@@ -286,26 +288,22 @@ public class SegmentedHashIndex<K> implements Index<K> {
             if (result == null) continue;
             int segIdx = getSegmentIndex(op.key);
             Segment<K> seg = segments[segIdx];
-            long stamp = seg.lock.writeLock();
-            try {
-                if (op.opType == BatchEntry.OpType.PUT) {
-                    if (result.wasPresent) {
-                        // 还原旧值
-                        seg.map.put(op.key, new Entry(result.oldAddress, result.oldSize));
-                    } else {
-                        // 新增的，撤销
-                        seg.map.remove(op.key);
-                        size.decrementAndGet();
-                    }
-                } else { // REMOVE
-                    if (result.wasPresent) {
-                        // 还原被删除的值
-                        seg.map.put(op.key, new Entry(result.oldAddress, result.oldSize));
-                        size.incrementAndGet();
-                    }
+            // 不获取锁 —— 调用者（applyBatch）已持有该 segment 的写锁
+            if (op.opType == BatchEntry.OpType.PUT) {
+                if (result.wasPresent) {
+                    // 还原旧值
+                    seg.map.put(op.key, new Entry(result.oldAddress, result.oldSize));
+                } else {
+                    // 新增的，撤销
+                    seg.map.remove(op.key);
+                    size.decrementAndGet();
                 }
-            } finally {
-                seg.lock.unlockWrite(stamp);
+            } else { // REMOVE
+                if (result.wasPresent) {
+                    // 还原被删除的值
+                    seg.map.put(op.key, new Entry(result.oldAddress, result.oldSize));
+                    size.incrementAndGet();
+                }
             }
         }
     }

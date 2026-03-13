@@ -605,7 +605,7 @@ public class RogueList<E> implements Iterable<E>, AutoCloseable {
         private long maxFileSize = 0L;
         private long autoCheckpointInterval = -1;  // 毫秒，-1 表示未配置
         private int autoCheckpointOperations = -1; // -1 表示未配置
-
+        private long defaultTTLMillis = 0;  // 默认 TTL（毫秒），0 表示永不过期
         private MmapBuilder() {
         }
 
@@ -753,6 +753,27 @@ public class RogueList<E> implements Iterable<E>, AutoCloseable {
                 throw new IllegalArgumentException("operationCount 必须为正数");
             }
             this.autoCheckpointOperations = operationCount;
+            return this;
+        }
+
+        /**
+         * 设置默认 TTL（Time-To-Live）
+         *
+         * <p>设置后，整个 List 将在指定时间后过期。
+         * TTL=0 表示永不过期。
+         *
+         * @param ttl  过期时间
+         * @param unit 时间单位
+         * @return 此构建器
+         */
+        public MmapBuilder<E> defaultTTL(long ttl, TimeUnit unit) {
+            if (ttl < 0) {
+                throw new IllegalArgumentException("ttl 不能为负数");
+            }
+            if (unit == null) {
+                throw new IllegalArgumentException("unit 不能为 null");
+            }
+            this.defaultTTLMillis = unit.toMillis(ttl);
             return this;
         }
 

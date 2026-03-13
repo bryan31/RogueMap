@@ -18,6 +18,7 @@ import com.yomahub.roguemap.serialization.StringCodec;
 import com.yomahub.roguemap.storage.MmapFileHeader;
 import com.yomahub.roguemap.storage.MmapStorage;
 import com.yomahub.roguemap.storage.StorageEngine;
+import com.yomahub.roguemap.util.TTLUtils;
 
 import java.io.File;
 import java.util.concurrent.TimeUnit;
@@ -37,15 +38,18 @@ public class RogueMap<K, V> implements AutoCloseable {
     private final Codec<V> valueCodec;
     private final Allocator allocator;
     private final AutoCheckpointManager autoCheckpointManager;
+    private final long defaultTTLMillis;  // 默认 TTL（毫秒），0 表示永不过期
 
     private RogueMap(Index<K> index, StorageEngine storage,
             Codec<K> keyCodec, Codec<V> valueCodec,
-            Allocator allocator, long autoCheckpointInterval, int autoCheckpointOperations) {
+            Allocator allocator, long autoCheckpointInterval, int autoCheckpointOperations,
+            long defaultTTLMillis) {
         this.index = index;
         this.storage = storage;
         this.keyCodec = keyCodec;
         this.valueCodec = valueCodec;
         this.allocator = allocator;
+        this.defaultTTLMillis = defaultTTLMillis;
 
         // 创建并启动自动 checkpoint（仅持久化模式）
         if (autoCheckpointInterval > 0 || autoCheckpointOperations > 0) {
@@ -60,45 +64,73 @@ public class RogueMap<K, V> implements AutoCloseable {
     }
 
     /**
-     * 将键值对放入 map
+     * 将键值对放入 map（使用默认 TTL）
      *
      * @param key   键
      * @param value 值
      * @return 之前的值，如果没有则返回 null
      */
     public V put(K key, V value) {
+        return put(key, value, defaultTTLMillis, TimeUnit.MILLISECONDS);
+    }
+
+    /**
+     * 将键值对放入 map（指定 TTL）
+     *
+     * @param key   键
+     * @param value 值
+     * @param ttl   过期时间（0 表示永不过期）
+     * @param unit  时间单位
+     * @return 之前的值，如果没有则返回 null
+     */
+    public V put(K key, V value, long ttl, TimeUnit unit) {
         if (key == null) {
             throw new IllegalArgumentException("键不能为 null");
         }
 
-        // 计算所需大小
+        long ttlMillis = (ttl > 0 && unit != null) ? unit.toMillis(ttl) : 0;
+
+        // 计算所需大小（数据大小 + TTL header）
         int valueSize = valueCodec.calculateSize(value);
         if (valueSize < 0) {
             throw new IllegalStateException("无法确定值的大小");
         }
+        int totalSize = TTLUtils.totalSize(valueSize);
 
-        // 为值分配内存
-        long newAddress = allocator.allocate(valueSize);
+        // 为值分配内存（包含 TTL header）
+        long newAddress = allocator.allocate(totalSize);
         if (newAddress == 0) {
-            throw new OutOfMemoryError("分配 " + valueSize + " 字节失败");
+            throw new OutOfMemoryError("分配 " + totalSize + " 字节失败");
         }
 
         try {
-            // 将值编码到新内存
-            int actualSize = valueCodec.encode(newAddress, value);
+            // 写入过期时间到 TTL header
+            long expireTime = TTLUtils.calculateExpireTime(ttlMillis);
+            TTLUtils.writeExpireTime(newAddress, expireTime);
+
+            // 将值编码到 TTL header 之后
+            long dataAddress = TTLUtils.getDataAddress(newAddress);
+            int actualSize = valueCodec.encode(dataAddress, value);
+            int actualTotalSize = TTLUtils.totalSize(actualSize);
 
             // 原子性地更新索引并获取旧值信息
             // 这确保了在多线程环境下，获取旧地址和更新索引是原子操作
-            IndexUpdateResult result = index.putAndGetOld(key, newAddress, actualSize);
+            IndexUpdateResult result = index.putAndGetOld(key, newAddress, actualTotalSize);
 
             // 处理旧值
             V oldValue = null;
             if (result.wasPresent) {
-                // 先解码旧值（此时旧地址还未被释放，是安全的）
-                oldValue = valueCodec.decode(result.oldAddress);
+                // 检查旧值是否过期
+                if (TTLUtils.isDataExpired(result.oldAddress)) {
+                    // 旧值已过期，不解码直接释放
+                    allocator.free(result.oldAddress, result.oldSize);
+                } else {
+                    // 先解码旧值（此时旧地址还未被释放，是安全的）
+                    oldValue = valueCodec.decode(TTLUtils.getDataAddress(result.oldAddress));
 
-                // 解码完成后才释放旧内存
-                allocator.free(result.oldAddress, result.oldSize);
+                    // 解码完成后才释放旧内存
+                    allocator.free(result.oldAddress, result.oldSize);
+                }
             }
 
             // 触发自动 checkpoint（操作计数模式）
@@ -109,7 +141,7 @@ public class RogueMap<K, V> implements AutoCloseable {
             return oldValue;
         } catch (Exception e) {
             // 异常处理：释放新分配的内存
-            allocator.free(newAddress, valueSize);
+            allocator.free(newAddress, totalSize);
             throw e;
         }
     }
@@ -117,8 +149,10 @@ public class RogueMap<K, V> implements AutoCloseable {
     /**
      * 根据键获取值
      *
+     * <p>如果值已过期，会自动删除并返回 null。
+     *
      * @param key 键
-     * @return 值，如果未找到则返回 null
+     * @return 值，如果未找到或已过期则返回 null
      */
     public V get(K key) {
         if (key == null) {
@@ -130,7 +164,16 @@ public class RogueMap<K, V> implements AutoCloseable {
             return null;
         }
 
-        return valueCodec.decode(address);
+        // 检查是否有过期时间
+        long expireTime = TTLUtils.readExpireTime(address);
+        if (expireTime > 0 && TTLUtils.isExpired(expireTime)) {
+            // 惰性删除：过期则删除并返回 null
+            remove(key);
+            return null;
+        }
+
+        // 数据没有过期时间（expireTime == 0），直接从地址读取数据
+        return valueCodec.decode(TTLUtils.getDataAddress(address));
     }
 
     /**
@@ -150,8 +193,8 @@ public class RogueMap<K, V> implements AutoCloseable {
             return null;
         }
 
-        // 先解码值
-        V oldValue = valueCodec.decode(result.address);
+        // 先解码值（从 TTL header 之后读取）
+        V oldValue = valueCodec.decode(TTLUtils.getDataAddress(result.address));
 
         // 释放内存
         allocator.free(result.address, result.size);
@@ -167,11 +210,26 @@ public class RogueMap<K, V> implements AutoCloseable {
     /**
      * 检查键是否存在
      *
+     * <p>如果值已过期，此方法会返回 false（不会自动删除，     *
      * @param key 键
-     * @return 如果存在返回 true，否则返回 false
+     * @return 如果存在（且未过期）返回 true，否则返回 false
      */
     public boolean containsKey(K key) {
-        return key != null && index.containsKey(key);
+        if (key == null) {
+            return false;
+        }
+
+        long address = index.get(key);
+        if (address == 0) {
+            return false;
+        }
+
+        // 检查是否过期
+        if (TTLUtils.isDataExpired(address)) {
+            return false;
+        }
+
+        return true;
     }
 
     /**
@@ -199,6 +257,7 @@ public class RogueMap<K, V> implements AutoCloseable {
      * （添加、更新或删除条目），否则可能导致不确定的行为。
      *
      * <p>注意：遍历过程中会对每个值进行反序列化，对于大量数据可能较慢。
+     * 已过期的条目也会被遍历（但不会自动删除）。
      *
      * <p>示例：
      * <pre>{@code
@@ -216,7 +275,11 @@ public class RogueMap<K, V> implements AutoCloseable {
         }
 
         index.forEach((key, address, size) -> {
-            V value = valueCodec.decode(address);
+            // 检查是否过期
+            if (TTLUtils.isDataExpired(address)) {
+                return; // 跳过已过期的条目
+            }
+            V value = valueCodec.decode(TTLUtils.getDataAddress(address));
             action.accept((K) key, value);
         });
     }
@@ -790,6 +853,7 @@ public class RogueMap<K, V> implements AutoCloseable {
         private long maxFileSize = 0L;
         private long autoCheckpointInterval = -1;  // 毫秒，-1 表示未配置
         private int autoCheckpointOperations = -1; // -1 表示未配置
+        private long defaultTTLMillis = 0;  // 默认 TTL（毫秒），0 表示永不过期
 
         private MmapBuilder() {
         }
@@ -921,6 +985,27 @@ public class RogueMap<K, V> implements AutoCloseable {
             return this;
         }
 
+        /**
+         * 设置默认 TTL（Time-To-Live）
+         *
+         * <p>设置后，所有未指定 TTL 的 put 操作将使用此默认值。
+         * TTL=0 表示永不过期。
+         *
+         * @param ttl  过期时间
+         * @param unit 时间单位
+         * @return 此构建器
+         */
+        public MmapBuilder<K, V> defaultTTL(long ttl, TimeUnit unit) {
+            if (ttl < 0) {
+                throw new IllegalArgumentException("ttl 不能为负数");
+            }
+            if (unit == null) {
+                throw new IllegalArgumentException("unit 不能为 null");
+            }
+            this.defaultTTLMillis = unit.toMillis(ttl);
+            return this;
+        }
+
         @Override
         public RogueMap<K, V> build() {
             if (keyCodec == null) {
@@ -993,7 +1078,7 @@ public class RogueMap<K, V> implements AutoCloseable {
             long checkpointInterval = isTemporary ? -1 : autoCheckpointInterval;
             int checkpointOperations = isTemporary ? -1 : autoCheckpointOperations;
 
-            return new RogueMap<>(index, storage, keyCodec, valueCodec, allocator, checkpointInterval, checkpointOperations);
+            return new RogueMap<>(index, storage, keyCodec, valueCodec, allocator, checkpointInterval, checkpointOperations, defaultTTLMillis);
         }
     }
 }

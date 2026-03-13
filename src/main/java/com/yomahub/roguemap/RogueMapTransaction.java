@@ -5,6 +5,7 @@ import com.yomahub.roguemap.index.IndexUpdateResult;
 import com.yomahub.roguemap.index.SegmentedHashIndex;
 import com.yomahub.roguemap.memory.Allocator;
 import com.yomahub.roguemap.serialization.Codec;
+import com.yomahub.roguemap.util.TTLUtils;
 
 import java.util.ArrayList;
 import java.util.Comparator;
@@ -138,13 +139,19 @@ public class RogueMapTransaction<K, V> implements AutoCloseable {
                     if (valueSize < 0) {
                         throw new IllegalStateException("无法确定值的大小：key=" + key);
                     }
-                    long newAddress = allocator.allocate(valueSize);
+                    // 分配包含 TTL header 的内存
+                    int totalSize = TTLUtils.totalSize(valueSize);
+                    long newAddress = allocator.allocate(totalSize);
                     if (newAddress == 0) {
-                        throw new OutOfMemoryError("事务提交：分配 " + valueSize + " 字节失败，空间不足");
+                        throw new OutOfMemoryError("事务提交：分配 " + totalSize + " 字节失败，空间不足");
                     }
-                    int actualSize = valueCodec.encode(newAddress, op.value);
-                    preAllocated.add(new long[]{newAddress, actualSize});
-                    batchOps.add(BatchEntry.put(key, newAddress, actualSize));
+                    // 写入过期时间（0 表示永不过期）
+                    TTLUtils.writeExpireTime(newAddress, 0);
+                    // 编码数据到 TTL header 之后
+                    int actualSize = valueCodec.encode(TTLUtils.getDataAddress(newAddress), op.value);
+                    int actualTotalSize = TTLUtils.totalSize(actualSize);
+                    preAllocated.add(new long[]{newAddress, actualTotalSize});
+                    batchOps.add(BatchEntry.put(key, newAddress, actualTotalSize));
                 } else {
                     batchOps.add(BatchEntry.remove(key));
                 }

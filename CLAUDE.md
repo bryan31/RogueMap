@@ -13,30 +13,12 @@ mvn test
 
 # Run a specific test class
 mvn test -Dtest=MmapFunctionalTest
-mvn test -Dtest=ConcurrentSafetyTest
-mvn test -Dtest=ListFunctionalTest
-mvn test -Dtest=SetFunctionalTest
-mvn test -Dtest=QueueFunctionalTest
 
-# Run concurrent tests
-mvn test -Dtest=ListConcurrentTest
-mvn test -Dtest=SetConcurrentTest
-mvn test -Dtest=QueueConcurrentTest
-
-# Run performance comparison tests
-mvn test -Dtest=*ComparisonTest
-
-# Run new queue tests (free list + crash recovery)
+# Run multiple test classes
 mvn test -Dtest=LinkedQueueFreeListTest,QueueCrashRecoveryTest
 
-# Run feature-specific tests
-mvn test -Dtest=CompactionTest
-mvn test -Dtest=CheckpointRecoveryTest
-mvn test -Dtest=FailFastIteratorTest
-mvn test -Dtest=StorageMetricsTest
-mvn test -Dtest=AutoExpansionTest
-mvn test -Dtest=TransactionTest
-mvn test -Dtest=MmapFunctionalTest  # includes forEach tests
+# Run tests by pattern
+mvn test -Dtest=*ComparisonTest
 
 # Release build (GPG signing + publish to Maven Central)
 mvn clean deploy -P release
@@ -44,7 +26,7 @@ mvn clean deploy -P release
 
 ## Architecture Overview
 
-RogueMap is a high-performance embedded storage library using memory-mapped files for off-heap storage. It provides four data structures: RogueMap (key-value store), RogueList (doubly-linked list), RogueSet (concurrent set), and RogueQueue (FIFO queue with linked/circular modes).
+RogueMap is a high-performance embedded storage library using memory-mapped files for off-heap storage. Java 8+, zero mandatory dependencies. Provides four data structures: RogueMap (key-value store), RogueList (doubly-linked list), RogueSet (concurrent set), and RogueQueue (FIFO queue with linked/circular modes).
 
 ### Layered Design
 
@@ -67,8 +49,10 @@ Memory-Mapped Files (persistent or temporary)
 **RogueMap<K,V>** - Key-value store:
 - `RogueMap.mmap().temporary()` - Temporary file mode (auto-deleted on JVM exit)
 - `RogueMap.mmap().persistent(path)` - Persistent file mode (data survives restart)
-- Index options: `basicIndex()`, `segmentedIndex(64)`, `primitiveIndex()`
+- Index options: `basicIndex()`, `segmentedIndex(64)`, `primitiveIndex()`, `lowHeapIndex()`
 - `forEach(BiConsumer<K,V>)` - Iterate over all key-value pairs
+- TTL support: `defaultTTL(ttl, unit)` in builder; data stored as `[expireTime(8 bytes)][actual data]`
+- Transactions: `beginTransaction()` returns AutoCloseable `Transaction<K,V>`
 
 **RogueList<E>** - Doubly-linked list with O(1) random access:
 - Maintains position index array for fast random access via `get(index)`
@@ -81,6 +65,7 @@ Memory-Mapped Files (persistent or temporary)
 - Optimistic read support for improved read performance
 - Standard operations: `add()`, `contains()`, `remove()`
 - `SetIterator` uses lazy segment loading (O(N/64) heap peak instead of O(N))
+- Low-heap mode: `lowHeapIndex()` for String-key-only off-heap index
 
 **RogueQueue<E>** - FIFO queue with two storage modes:
 - **Linked mode** (unbounded): `RogueQueue.mmap().linked()`
@@ -107,11 +92,18 @@ Memory-Mapped Files (persistent or temporary)
 - Use when you need guaranteed recoverability between close() calls
 - All four data structures support this in persistent mode
 
+**AutoCheckpointManager** - Automatic checkpoint triggering:
+- Time-interval mode: `autoCheckpoint(long interval, TimeUnit unit)` in builder
+- Operation-count mode: `autoCheckpoint(int operationCount)` in builder
+- Both modes can be enabled simultaneously; either condition triggers checkpoint
+- Uses scheduled daemon thread pool; CAS-based operation counter to avoid duplicate triggers
+- All four data structures support auto-checkpoint via builder
+
 **Fail-fast Iterators**:
 - RogueSet and RogueList iterators throw `ConcurrentModificationException` if collection is modified during iteration
 - Tracks modification count; detects structural changes (add/remove/clear)
 
-**Auto-Expansion** - Dynamic file growth for RogueMap (and other structures via builder):
+**Auto-Expansion** - Dynamic file growth:
 - `autoExpand(true)` in builder enables automatic file growth when space runs out
 - `expandFactor(double)` controls growth multiplier (default 2.0); `maxFileSize(long)` sets optional cap
 - Expansion only maps new region; existing segment base addresses are unchanged
@@ -125,6 +117,13 @@ Memory-Mapped Files (persistent or temporary)
 - `close()` without `commit()` auto-rolls back; `rollback()` also explicit
 - Isolation: Read Committed (reads see committed data, not own pending writes)
 - Deadlock prevention: locks acquired in ascending segment-index order
+- **Not supported** with `lowHeapIndex()`
+
+**TTL (Time-To-Live)** - Data expiration for RogueMap:
+- Builder: `.defaultTTL(ttl, TimeUnit)` sets default TTL for all entries
+- Storage format: `[expireTime(8 bytes)][actual data]` — expiration timestamp prefix in mmap
+- `TTLUtils` helper: `calculateExpireTime()`, `isExpired()`, `readExpireTime()`, `writeExpireTime()`
+- TTL header size is 8 bytes; `getDataAddress()` skips header to reach actual data
 
 ### Core Packages
 
@@ -132,6 +131,8 @@ Memory-Mapped Files (persistent or temporary)
 - `HashIndex` - Basic ConcurrentHashMap-based index
 - `SegmentedHashIndex` - 64 segments with StampedLock (default for RogueMap)
 - `LongPrimitiveIndex` / `IntPrimitiveIndex` - Primitive array indexes
+- `LowHeapStringIndex` - Ultra-low heap String-only index (slot table + key bytes stored off-heap in mmap, only segment metadata/locks on JVM heap; 32-byte slots with EMPTY/USED/DELETED states; configured via `LowHeapOptions`)
+- `BatchEntry` - Transaction batch operation entry
 
 **list/** - List-specific components:
 - `ListIndex` - Manages head/tail pointers + position index array
@@ -139,10 +140,11 @@ Memory-Mapped Files (persistent or temporary)
 
 **set/** - Set-specific components:
 - `SetIndex` - Segmented hash set index (64 segments)
+- `LowHeapStringSetIndex` - Low-heap variant using `LowHeapStringIndex` as delegate
 - `SetIterator` - Iterator implementation
 
 **queue/** - Queue storage implementations:
-- `LinkedQueueStorage` - Unbounded linked queue
+- `LinkedQueueStorage` - Unbounded linked queue with free list for node recycling
 - `CircularQueueStorage` - Bounded ring buffer queue
 
 **storage/** - Storage engine:
@@ -158,12 +160,17 @@ Memory-Mapped Files (persistent or temporary)
 - `PrimitiveCodecs` - Zero-copy codecs for Long, Integer, Double, Float, Short, Byte, Boolean
 - `StringCodec` - UTF-8 string codec
 - `KryoObjectCodec` - Object serialization via Kryo (optional dependency)
+- `TypeReference<T>` - Preserves complex generic type info at runtime for Kryo (e.g., `new TypeReference<List<User>>() {}`)
+
+**util/** - Utilities:
+- `TempFileManager` - Temporary file management with `forceUnmap()` (tries Java 9+ `invokeCleaner` first)
+- `TTLUtils` - TTL header read/write, expiration calculation
 
 ### Key Design Patterns
 
 1. **Builder Pattern** - All four data structures use fluent builders (`MmapBuilder`)
 2. **Segmented Locking** - 64 independent StampedLocks minimize contention
-3. **Linear Allocation** - CAS-based offset allocation, append-only (no free list)
+3. **Linear Allocation** - CAS-based offset allocation, append-only (no free list except LinkedQueue)
 4. **Zero-Copy Primitives** - PrimitiveCodecs write directly to memory
 5. **Copy-on-Compact** - `compact()` creates new file with live data only (append-only creates fragmentation over time)
 
@@ -185,36 +192,21 @@ src/main/java/com/yomahub/roguemap/
 ├── RogueSet.java              # Concurrent set
 ├── RogueQueue.java            # FIFO queue
 ├── RogueMapTransaction.java   # Transaction implementation (commit/rollback)
+├── AutoCheckpointManager.java # Time/operation-count auto-checkpoint
 ├── StorageMetrics.java        # Storage health metrics (fragmentation, usage)
-├── index/                     # Map index implementations
-│   └── BatchEntry.java        # Transaction batch operation entry
+├── index/                     # Map index implementations (Hash, Segmented, Primitive, LowHeap)
 ├── list/                      # List index + iterator
-├── set/                       # Set index + iterator
+├── set/                       # Set index + iterator (including LowHeapStringSetIndex)
 ├── queue/                     # Queue storage implementations
 ├── storage/                   # MmapStorage + MmapFileHeader
 ├── memory/                    # MmapAllocator + UnsafeOps
-├── serialization/             # Codec implementations
-└── util/                      # TempFileManager
-
-src/test/java/com/yomahub/roguemap/
-├── mmap/                      # Map functional and performance tests
-├── compare/                   # Comparison tests vs HashMap, Caffeine, FastUtil, MapDB
-├── list/                      # List tests
-├── set/                       # Set tests
-├── queue/                     # Queue tests
-├── memory/                    # UnsafeOps tests
-├── serialization/             # Codec tests
-├── CompactionTest.java        # Space reclamation tests
-├── CheckpointRecoveryTest.java # Crash recovery tests
-├── FailFastIteratorTest.java  # Iterator concurrent modification tests
-├── StorageMetricsTest.java    # Metrics API tests
-├── AutoExpansionTest.java     # Auto-expansion tests
-└── TransactionTest.java       # Transaction atomicity/isolation tests
+├── serialization/             # Codec implementations + TypeReference
+└── util/                      # TempFileManager + TTLUtils
 ```
 
 ## Important Notes
 
-- **Java 8+** - Uses `sun.misc.Unsafe` for direct memory operations
+- **Java 8+** - Uses `sun.misc.Unsafe` for direct memory operations; Java 9+ tests use `--add-opens` (auto-activated via Maven profile)
 - **Thread Safety** - All operations are thread-safe via segmented locking
 - **Resource Management** - Always use try-with-resources to ensure proper cleanup
 - **File Pre-allocation** - Mmap mode pre-allocates disk space via `allocateSize()`
@@ -223,8 +215,10 @@ src/test/java/com/yomahub/roguemap/
 - **Fragmentation** - Append-only allocator creates dead bytes on updates/deletes; use `getMetrics()` to monitor and `compact()` when fragmentation ratio > 0.5
 - **Auto-Expansion** - `autoExpand(true)` in builder allows file to grow; `tryAllocate()` skips segment tail bytes to avoid cross-boundary writes; use `getAddressForOffset()` / `getFileOffsetForAddress()` for safe multi-segment address translation
 - **Transaction** - `map.beginTransaction()` returns AutoCloseable `Transaction<K,V>`; commit() is atomic; close() without commit() auto-rolls back; deadlock prevented by always locking segments in ascending index order
+- **LowHeapIndex** - `lowHeapIndex()` is String-key-only; does not support `beginTransaction()`; does not auto-migrate legacy index formats
 - **Iterator Safety** - Set/List iterators are fail-fast; do not modify collection during iteration
 - **Test File Cleanup** - After JVM crash, @AfterEach doesn't run. Clean test directories in @BeforeEach to avoid corrupt leftover files crashing subsequent test runs
+- **Keys on heap, values off-heap** - For expansion tests, value bytes (not key count) must exceed initial file size to trigger growth
 
 ## Critical Implementation Details
 
@@ -243,3 +237,12 @@ offset 96-4095: Reserved
 - `MmapAllocator.allocate()` rejects sizes > 512MB (defensive check)
 - `MmapAllocator.free()` is a no-op (append-only allocator)
 - LinkedQueueStorage maintains its own free list for node recycling
+- `getAddressForOffset(fileOffset)` — file offset to physical address via segment table
+- `getFileOffsetForAddress(physAddr)` — physical address to file offset (reverse lookup)
+
+### TTL Data Layout
+```
+[expireTime: 8 bytes (long)][actual serialized data]
+```
+- `TTLUtils.TTL_HEADER_SIZE = 8`; `DEFAULT_TTL = 0` (never expires)
+- Expiration stored as absolute timestamp from `System.currentTimeMillis() + ttlMillis`

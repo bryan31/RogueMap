@@ -153,6 +153,7 @@ public class KryoObjectCodec<T> implements Codec<T> {
 
         // 反序列化
         KryoHolder holder = kryoHolder.get();
+        holder.cachedBytes = null; // 清除残留缓存，防止后续 encode() 误用旧数据
         holder.kryo.reset();  // 重置引用追踪表，确保每次解码从干净状态开始
         Input input = holder.input;
         input.setBuffer(data);

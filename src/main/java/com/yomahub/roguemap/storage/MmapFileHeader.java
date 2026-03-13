@@ -35,12 +35,16 @@ import java.util.zip.CRC32;
  * - Snapshot.valid (4 bytes, offset 84): 1=快照有效
  * - Snapshot.currentAllocOffset (8 bytes, offset 88)
  *
- * ===== Reserved（bytes 96-4095）=====
+ * ===== RogueList TTL（bytes 96-111）=====
+ * - List ExpireTime (8 bytes, offset 96): RogueList 整体过期时间戳（0=永不过期）
+ * - Reserved (8 bytes, offset 104)
+ *
+ * ===== Reserved（bytes 112-4095）=====
  */
 public class MmapFileHeader {
 
     public static final int MAGIC_NUMBER = 0x524D4150;  // "RMAP"
-    public static final int VERSION = 1;
+    public static final int VERSION = 2;  // v2: 支持 TTL
     public static final int HEADER_SIZE = 4096;  // 4KB
 
     // Data Type 常量
@@ -61,6 +65,9 @@ public class MmapFileHeader {
     public static final int SNAPSHOT_SIZE_POS = 80;
     public static final int SNAPSHOT_VALID_POS = 84;
     public static final int SNAPSHOT_ALLOC_OFFSET_POS = 88;
+
+    // ===== RogueList TTL 偏移量 =====
+    public static final int LIST_EXPIRE_TIME_POS = 96;  // RogueList 整体过期时间戳
 
     // 数据字段大小（CRC32 覆盖的范围）
     private static final int DATA_FIELDS_SIZE = 48;
@@ -224,6 +231,28 @@ public class MmapFileHeader {
      */
     public static long getSnapshotAllocOffset(long address) {
         return UnsafeOps.getLong(address + SNAPSHOT_ALLOC_OFFSET_POS);
+    }
+
+    // ========== RogueList TTL ==========
+
+    /**
+     * 获取 RogueList 的整体过期时间戳
+     *
+     * @param address mmap 基地址
+     * @return 过期时间戳（毫秒），0 表示永不过期
+     */
+    public static long getListExpireTime(long address) {
+        return UnsafeOps.getLong(address + LIST_EXPIRE_TIME_POS);
+    }
+
+    /**
+     * 设置 RogueList 的整体过期时间戳
+     *
+     * @param address    mmap 基地址
+     * @param expireTime 过期时间戳（毫秒），0 表示永不过期
+     */
+    public static void setListExpireTime(long address, long expireTime) {
+        UnsafeOps.putLong(address + LIST_EXPIRE_TIME_POS, expireTime);
     }
 
     // ========== CRC32 计算 ==========

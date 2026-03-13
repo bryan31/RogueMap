@@ -304,8 +304,18 @@ public class LinkedQueueStorage<E> implements QueueStorage<E> {
 
     /**
      * 将当前队列状态写入 mmap 文件头 Reserved 区的快照位置。
-     * 写入 4 个字段：headRelOffset, tailRelOffset, size, snapshotValid=1, allocOffset。
-     * 纯 mmap 内存写，无 syscall，开销约 20-40ns。
+     * 写入 4 个字段：headRelOffset, tailRelOffset, size, allocOffset，以及 snapshotValid 标志。
+     *
+     * <p><b>原子性保证</b>（invalidate-before-write 协议）：
+     * <ol>
+     *   <li>先将 snapshotValid 置 0（失效旧快照）</li>
+     *   <li>storeFence —— 确保失效对其他线程/崩溃恢复可见</li>
+     *   <li>写入 headRel, tailRel, size, allocOffset</li>
+     *   <li>storeFence —— 确保所有数据字段先于 valid 标记落盘</li>
+     *   <li>将 snapshotValid 置 1（新快照生效）</li>
+     * </ol>
+     * 若进程在步骤 1-4 之间崩溃，snapshotValid=0，恢复时忽略此快照。
+     *
      * 必须在 writeLock 内调用。
      */
     private void writeSnapshot() {
@@ -314,11 +324,19 @@ public class LinkedQueueStorage<E> implements QueueStorage<E> {
         long headRel = toStoredOffset(headOffset);
         long tailRel = toStoredOffset(tailOffset);
 
+        // 1. 失效旧快照
+        UnsafeOps.putInt(snapshotAddress + 20, 0);                             // offset 84: invalid
+        UnsafeOps.storeFence();
+
+        // 2. 写入数据字段
         UnsafeOps.putLong(snapshotAddress, headRel);                           // offset 64
         UnsafeOps.putLong(snapshotAddress + 8, tailRel);                       // offset 72
         UnsafeOps.putInt(snapshotAddress + 16, size.get());                    // offset 80
-        UnsafeOps.putInt(snapshotAddress + 20, 1);                             // offset 84: valid
         UnsafeOps.putLong(snapshotAddress + 24, allocator.usedMemory());       // offset 88
+        UnsafeOps.storeFence();
+
+        // 3. 生效新快照
+        UnsafeOps.putInt(snapshotAddress + 20, 1);                             // offset 84: valid
     }
 
     /**
