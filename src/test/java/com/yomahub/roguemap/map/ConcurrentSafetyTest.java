@@ -1,6 +1,7 @@
-package com.yomahub.roguemap.compare;
+package com.yomahub.roguemap.map;
 
 import com.yomahub.roguemap.RogueMap;
+import com.yomahub.roguemap.benchmark.TestValueObject;
 import com.yomahub.roguemap.serialization.KryoObjectCodec;
 import com.yomahub.roguemap.serialization.PrimitiveCodecs;
 import org.junit.jupiter.api.AfterEach;

@@ -1,4 +1,4 @@
-package com.yomahub.roguemap.mmap;
+package com.yomahub.roguemap.benchmark;
 
 import com.yomahub.roguemap.RogueMap;
 import com.yomahub.roguemap.serialization.KryoObjectCodec;
@@ -20,7 +20,7 @@ import java.io.File;
  * - 大数据量性能
  * - 文件 I/O 性能
  */
-public class MmapPerformanceTest {
+public class MapPerformanceTest {
 
     private static final String TEST_FILE = "target/test-mmap-performance.db";
 

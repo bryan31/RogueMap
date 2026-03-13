@@ -1,5 +1,6 @@
-package com.yomahub.roguemap;
+package com.yomahub.roguemap.map;
 
+import com.yomahub.roguemap.RogueMap;
 import com.yomahub.roguemap.serialization.PrimitiveCodecs;
 import com.yomahub.roguemap.serialization.StringCodec;
 import com.yomahub.roguemap.util.TTLUtils;

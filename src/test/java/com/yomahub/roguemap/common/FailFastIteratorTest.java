@@ -1,5 +1,7 @@
-package com.yomahub.roguemap;
+package com.yomahub.roguemap.common;
 
+import com.yomahub.roguemap.RogueList;
+import com.yomahub.roguemap.RogueSet;
 import com.yomahub.roguemap.serialization.PrimitiveCodecs;
 import com.yomahub.roguemap.serialization.StringCodec;
 import org.junit.jupiter.api.Test;

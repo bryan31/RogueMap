@@ -1,5 +1,8 @@
-package com.yomahub.roguemap;
+package com.yomahub.roguemap.common;
 
+import com.yomahub.roguemap.RogueMap;
+import com.yomahub.roguemap.RogueMapTransaction;
+import com.yomahub.roguemap.RogueQueue;
 import com.yomahub.roguemap.memory.UnsafeOps;
 import com.yomahub.roguemap.serialization.KryoObjectCodec;
 import com.yomahub.roguemap.serialization.PrimitiveCodecs;

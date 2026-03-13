@@ -1,4 +1,4 @@
-package com.yomahub.roguemap.compare;
+package com.yomahub.roguemap.benchmark;
 
 import java.io.Serializable;
 import java.util.Objects;

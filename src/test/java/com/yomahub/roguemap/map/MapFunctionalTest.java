@@ -1,4 +1,4 @@
-package com.yomahub.roguemap.mmap;
+package com.yomahub.roguemap.map;
 
 import com.yomahub.roguemap.RogueMap;
 import com.yomahub.roguemap.serialization.KryoObjectCodec;
@@ -29,7 +29,7 @@ import static org.junit.jupiter.api.Assertions.*;
  * - 大数据量持久化
  * - 文件管理和异常处理
  */
-public class MmapFunctionalTest {
+public class MapFunctionalTest {
 
     private static final String TEST_FILE = "target/test-mmap-functional.db";
 

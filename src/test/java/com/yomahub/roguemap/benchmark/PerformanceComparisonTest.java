@@ -1,4 +1,4 @@
-package com.yomahub.roguemap.compare;
+package com.yomahub.roguemap.benchmark;
 
 import com.github.benmanes.caffeine.cache.Cache;
 import com.github.benmanes.caffeine.cache.Caffeine;

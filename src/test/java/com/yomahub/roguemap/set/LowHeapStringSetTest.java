@@ -1,5 +1,7 @@
-package com.yomahub.roguemap;
+package com.yomahub.roguemap.set;
 
+import com.yomahub.roguemap.RogueSet;
+import com.yomahub.roguemap.StorageMetrics;
 import com.yomahub.roguemap.memory.MmapAllocator;
 import com.yomahub.roguemap.serialization.StringCodec;
 import com.yomahub.roguemap.storage.MmapFileHeader;

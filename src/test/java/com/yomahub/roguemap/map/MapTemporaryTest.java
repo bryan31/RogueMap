@@ -1,4 +1,4 @@
-package com.yomahub.roguemap.mmap;
+package com.yomahub.roguemap.map;
 
 import com.yomahub.roguemap.RogueMap;
 import com.yomahub.roguemap.serialization.PrimitiveCodecs;
@@ -12,7 +12,7 @@ import static org.junit.jupiter.api.Assertions.*;
 /**
  * 临时文件模式测试
  */
-public class MmapTemporaryTest {
+public class MapTemporaryTest {
 
     @Test
     public void testTemporaryFileBasicOperations() {
