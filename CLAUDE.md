@@ -119,8 +119,9 @@ Memory-Mapped Files (persistent or temporary)
 - Deadlock prevention: locks acquired in ascending segment-index order
 - **Not supported** with `lowHeapIndex()`
 
-**TTL (Time-To-Live)** - Data expiration for RogueMap:
+**TTL (Time-To-Live)** - Data expiration (all four data structures):
 - Builder: `.defaultTTL(ttl, TimeUnit)` sets default TTL for all entries
+- RogueMap also supports per-entry TTL: `put(key, value, ttl, TimeUnit)`
 - Storage format: `[expireTime(8 bytes)][actual data]` — expiration timestamp prefix in mmap
 - `TTLUtils` helper: `calculateExpireTime()`, `isExpired()`, `readExpireTime()`, `writeExpireTime()`
 - TTL header size is 8 bytes; `getDataAddress()` skips header to reach actual data
@@ -201,7 +202,8 @@ src/main/java/com/yomahub/roguemap/
 ├── storage/                   # MmapStorage + MmapFileHeader
 ├── memory/                    # MmapAllocator + UnsafeOps
 ├── serialization/             # Codec implementations + TypeReference
-└── util/                      # TempFileManager + TTLUtils
+├── util/                      # TempFileManager + TTLUtils
+└── btree/                     # Placeholder (future B-tree implementation)
 ```
 
 ### Test Structure
