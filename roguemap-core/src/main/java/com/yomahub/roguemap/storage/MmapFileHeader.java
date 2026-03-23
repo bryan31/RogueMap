@@ -53,6 +53,7 @@ public class MmapFileHeader {
     public static final int DATA_TYPE_SET = 2;            // RogueSet
     public static final int DATA_TYPE_QUEUE_LINKED = 3;   // RogueQueue Linked模式
     public static final int DATA_TYPE_QUEUE_CIRCULAR = 4; // RogueQueue Circular模式
+    public static final int DATA_TYPE_MEMORY = 5;          // RogueMemory
 
     // ===== 完整性校验字段偏移量 =====
     public static final int CRC32_POS = 48;
@@ -68,6 +69,10 @@ public class MmapFileHeader {
 
     // ===== RogueList TTL 偏移量 =====
     public static final int LIST_EXPIRE_TIME_POS = 96;  // RogueList 整体过期时间戳
+
+    // ===== RogueMemory 扩展字段（bytes 112-127）=====
+    public static final int MEMORY_BM25_INDEX_OFFSET_POS = 112;  // BM25 倒排索引在文件中的偏移量（8 bytes）
+    public static final int MEMORY_HNSW_GENERATION_POS = 120;    // HNSW 文件的 generation 号（8 bytes），用于一致性校验
 
     // 数据字段大小（CRC32 覆盖的范围）
     private static final int DATA_FIELDS_SIZE = 48;
@@ -253,6 +258,48 @@ public class MmapFileHeader {
      */
     public static void setListExpireTime(long address, long expireTime) {
         UnsafeOps.putLong(address + LIST_EXPIRE_TIME_POS, expireTime);
+    }
+
+    // ========== RogueMemory 字段访问 ==========
+
+    /**
+     * 获取 BM25 倒排索引在文件中的偏移量
+     *
+     * @param address mmap 基地址
+     * @return BM25 索引偏移量
+     */
+    public static long getBm25IndexOffset(long address) {
+        return UnsafeOps.getLong(address + MEMORY_BM25_INDEX_OFFSET_POS);
+    }
+
+    /**
+     * 设置 BM25 倒排索引在文件中的偏移量
+     *
+     * @param address mmap 基地址
+     * @param offset  BM25 索引偏移量
+     */
+    public static void setBm25IndexOffset(long address, long offset) {
+        UnsafeOps.putLong(address + MEMORY_BM25_INDEX_OFFSET_POS, offset);
+    }
+
+    /**
+     * 获取 HNSW 文件的 generation 号（用于一致性校验）
+     *
+     * @param address mmap 基地址
+     * @return HNSW generation 号
+     */
+    public static long getHnswGeneration(long address) {
+        return UnsafeOps.getLong(address + MEMORY_HNSW_GENERATION_POS);
+    }
+
+    /**
+     * 设置 HNSW 文件的 generation 号（用于一致性校验）
+     *
+     * @param address    mmap 基地址
+     * @param generation HNSW generation 号
+     */
+    public static void setHnswGeneration(long address, long generation) {
+        UnsafeOps.putLong(address + MEMORY_HNSW_GENERATION_POS, generation);
     }
 
     // ========== CRC32 计算 ==========
