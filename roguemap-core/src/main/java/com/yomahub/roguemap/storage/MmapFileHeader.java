@@ -39,7 +39,11 @@ import java.util.zip.CRC32;
  * - List ExpireTime (8 bytes, offset 96): RogueList 整体过期时间戳（0=永不过期）
  * - Reserved (8 bytes, offset 104)
  *
- * ===== Reserved（bytes 112-4095）=====
+ * ===== RogueMemory 扩展字段（bytes 112-127）=====
+ * - BM25 IndexOffset (8 bytes, offset 112): BM25 倒排索引在文件中的偏移量（0=尚未写入）
+ * - HNSW Generation (8 bytes, offset 120): HNSW 文件的 generation 号，用于一致性校验
+ *
+ * ===== Reserved（bytes 128-4095）=====
  */
 public class MmapFileHeader {
 
