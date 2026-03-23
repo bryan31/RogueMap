@@ -1,5 +1,6 @@
 package com.yomahub.roguemap.memory;
 
+import java.util.Collections;
 import java.util.Map;
 
 /** 搜索结果 */
@@ -16,7 +17,7 @@ public class MemoryResult {
                         String namespace, float score, long createdAt, long expireTime) {
         this.id = id;
         this.content = content;
-        this.metadata = metadata;
+        this.metadata = metadata != null ? Collections.unmodifiableMap(metadata) : null;
         this.namespace = namespace;
         this.score = score;
         this.createdAt = createdAt;

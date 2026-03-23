@@ -1,5 +1,6 @@
 package com.yomahub.roguemap.memory;
 
+import java.util.Collections;
 import java.util.Map;
 
 /** 一条记忆的完整数据，包括原始向量（内部使用） */
@@ -16,7 +17,7 @@ public class MemoryEntry {
                        String namespace, long createdAt, long expireTime, float[] vector) {
         this.id = id;
         this.content = content;
-        this.metadata = metadata;
+        this.metadata = metadata != null ? Collections.unmodifiableMap(metadata) : null;
         this.namespace = namespace;
         this.createdAt = createdAt;
         this.expireTime = expireTime;
