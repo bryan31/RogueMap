@@ -447,6 +447,14 @@ public class MmapAllocator implements Allocator {
                 if (raf != null) {
                     raf.close();
                 }
+
+                // 强制释放 MappedByteBuffer（Windows 上关闭 FileChannel 不会自动释放文件句柄，
+                // 若不显式 unmap，compact()/delete() 时 rename 会失败）
+                for (MappedByteBuffer segment : segments) {
+                    if (segment != null) {
+                        TempFileManager.forceUnmap(segment);
+                    }
+                }
             }
         } catch (Exception e) {
             throw new RuntimeException("关闭内存映射文件失败", e);

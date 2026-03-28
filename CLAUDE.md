@@ -5,11 +5,16 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Build and Test Commands
 
 ```bash
-# Compile the project
+# Compile the project (all modules)
 mvn clean compile
 
-# Run all tests
+# Run all tests (all modules)
 mvn test
+
+# Run tests for a specific module
+mvn test -pl roguemap-core
+mvn test -pl roguemap-memory
+mvn test -pl roguemap-memory-pro
 
 # Run a specific test class
 mvn test -Dtest=MapFunctionalTest
@@ -23,6 +28,18 @@ mvn test -Dtest=*ComparisonTest
 # Release build (GPG signing + publish to Maven Central)
 mvn clean deploy -P release
 ```
+
+## Module Structure
+
+This is a multi-module Maven project:
+
+| Module | Java | Description |
+|---|---|---|
+| `roguemap-core` | 8+ | Core off-heap storage library (zero mandatory deps) |
+| `roguemap-memory` | 8+ | AI memory layer; HNSW vector index via `jelmerk/hnswlib-core` |
+| `roguemap-memory-pro` | 11+ | AI memory layer; higher-performance HNSW via `datastax/jvector` |
+
+`roguemap-memory` and `roguemap-memory-pro` are structurally identical except for the vector index backend (`HnswVectorIndex` vs `JVectorIndex`). Both depend on `roguemap-core`.
 
 ## Architecture Overview
 
@@ -218,6 +235,76 @@ src/test/java/com/yomahub/roguemap/
 ├── memory/         # UnsafeOps tests
 ├── serialization/  # KryoObjectCodec tests
 └── benchmark/      # Performance comparison tests + TestValueObject fixture
+```
+
+## roguemap-memory / roguemap-memory-pro
+
+### RogueMemory
+
+AI memory layer built on `roguemap-core`. Supports hybrid retrieval (vector + BM25) with mmap-backed persistence.
+
+```java
+RogueMemory mem = RogueMemory.builder()
+    .path("data/mem")
+    .searchMode(SearchMode.HYBRID)         // HYBRID | VECTOR_ONLY | KEYWORD_ONLY
+    .embeddingProvider(new OpenAIEmbeddingProvider(apiKey, "text-embedding-3-small"))
+    .build();
+
+String id = mem.add("content", metadata, "namespace");
+List<MemoryResult> results = mem.search(SearchOptions.builder()
+    .query("query text").topK(10).namespace("namespace").build());
+mem.delete(id);
+mem.close();
+```
+
+**SearchMode:**
+- `HYBRID` (default) — vector search + BM25, merged via RRF; requires `EmbeddingProvider`
+- `VECTOR_ONLY` — ANN only; requires `EmbeddingProvider`
+- `KEYWORD_ONLY` — BM25 only; no `EmbeddingProvider` needed
+
+### Vector Index Backends
+
+- **`roguemap-memory` (`HnswVectorIndex`)** — `jelmerk/hnswlib-core 1.2.1`; Java 8+; cosine similarity; M=16, efConstruction=200, ef=50
+- **`roguemap-memory-pro` (`JVectorIndex`)** — `datastax/jvector 3.0.1`; Java 11+; uses `GraphIndexBuilder` with ordinal→id mapping for ANN
+
+Both implement `VectorIndex`: `add(id, vector)`, `search(vector, topK)`, `markDeleted(id)`, `serialize(DataOutput)`, `deserialize(DataInput)`.
+
+### EmbeddingProvider SPI
+
+Implement `EmbeddingProvider` to plug in any embedding source:
+- `OpenAIEmbeddingProvider` — calls OpenAI `/embeddings` (or compatible endpoint); zero extra deps
+- `OllamaEmbeddingProvider` — calls local Ollama `/api/embeddings`; dimension must be specified manually
+
+### mmap Record Format
+
+```
+[expireTime: 8B][id: 16B UUID][ns_len: 2B][namespace bytes]
+[content_len: 4B][content bytes][meta_len: 4B][metadata bytes]
+[vector_len: 4B][vector floats (4B each)][deleted: 1B][createdAt: 8B]
+```
+
+Metadata encoding: `[pair_count: 2B][key_len: 2B][key bytes][val_len: 2B][val bytes]...`
+
+### Package Layout (both memory modules)
+
+```
+com.yomahub.roguemap.memory/
+├── RogueMemory.java            # Main API (Builder, add/search/delete/compact/close)
+├── SearchMode.java             # HYBRID | VECTOR_ONLY | KEYWORD_ONLY
+├── SearchOptions.java          # Query builder (query, topK, namespace, filter, minScore)
+├── MemoryResult.java           # Search result (id, content, score, metadata)
+├── MemoryEntry.java            # Internal entry model
+├── embedding/
+│   ├── EmbeddingProvider.java  # SPI interface
+│   ├── OpenAIEmbeddingProvider.java
+│   └── OllamaEmbeddingProvider.java
+├── index/
+│   ├── VectorIndex.java        # ANN index interface
+│   ├── HnswVectorIndex.java    # (roguemap-memory only)
+│   ├── JVectorIndex.java       # (roguemap-memory-pro only)
+│   └── BM25Index.java          # BM25 keyword index (shared pattern)
+└── util/
+    └── Tokenizer.java          # Simple whitespace/punctuation tokenizer for BM25
 ```
 
 ## Important Notes
