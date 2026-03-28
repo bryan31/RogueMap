@@ -208,6 +208,9 @@ public class P0FixVerificationTest {
     public void testQueueSnapshotRecoveryFrequentOfferPoll() {
         String path = TEST_DIR + "snapshot_freq_test.db";
 
+        final int[] expectedSize = new int[1];
+        final Long[] expectedPeek = new Long[1];
+
         // 交替 offer/poll，每次操作都会触发 writeSnapshot
         try (RogueQueue<Long> queue = RogueQueue.<Long>mmap()
                 .persistent(path)
@@ -221,24 +224,20 @@ public class P0FixVerificationTest {
                     queue.poll(); // 每 3 个 offer 做一次 poll
                 }
             }
-            int expectedSize = queue.size();
-            assertTrue(expectedSize > 0);
+            expectedSize[0] = queue.size();
+            assertTrue(expectedSize[0] > 0);
+            expectedPeek[0] = queue.peek();
+        } // try-with-resources 在此正常关闭
 
-            // 记录 peek 值
-            Long expectedPeek = queue.peek();
+        // 重新打开验证恢复
+        try (RogueQueue<Long> reopened = RogueQueue.<Long>mmap()
+                .persistent(path)
+                .linked()
+                .elementCodec(PrimitiveCodecs.LONG)
+                .build()) {
 
-            // 关闭后重新打开
-            queue.close();
-
-            try (RogueQueue<Long> reopened = RogueQueue.<Long>mmap()
-                    .persistent(path)
-                    .linked()
-                    .elementCodec(PrimitiveCodecs.LONG)
-                    .build()) {
-
-                assertEquals(expectedSize, reopened.size(), "恢复后 size 应一致");
-                assertEquals(expectedPeek, reopened.peek(), "恢复后 peek 应一致");
-            }
+            assertEquals(expectedSize[0], reopened.size(), "恢复后 size 应一致");
+            assertEquals(expectedPeek[0], reopened.peek(), "恢复后 peek 应一致");
         }
     }
 

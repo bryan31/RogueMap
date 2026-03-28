@@ -15,6 +15,7 @@ mvn test
 mvn test -pl roguemap-core
 mvn test -pl roguemap-memory
 mvn test -pl roguemap-memory-pro
+mvn test -pl roguemap-embedding
 
 # Run a specific test class
 mvn test -Dtest=MapFunctionalTest
@@ -36,10 +37,13 @@ This is a multi-module Maven project:
 | Module | Java | Description |
 |---|---|---|
 | `roguemap-core` | 8+ | Core off-heap storage library (zero mandatory deps) |
+| `roguemap-embedding` | 8+ | Universal `EmbeddingProvider` implementation; zero extra deps |
 | `roguemap-memory` | 8+ | AI memory layer; HNSW vector index via `jelmerk/hnswlib-core` |
 | `roguemap-memory-pro` | 11+ | AI memory layer; higher-performance HNSW via `datastax/jvector` |
 
 `roguemap-memory` and `roguemap-memory-pro` are structurally identical except for the vector index backend (`HnswVectorIndex` vs `JVectorIndex`). Both depend on `roguemap-core`.
+
+`roguemap-embedding` provides `UniversalEmbeddingProvider` — a single class that works with any OpenAI `/v1/embeddings`-compatible service (OpenAI, Mistral, Jina, Voyage, Ollama in OpenAI-compat mode, Alibaba DashScope, Zhipu GLM, etc.) using only `HttpURLConnection`. The older `OpenAIEmbeddingProvider` and `OllamaEmbeddingProvider` in the memory modules are `@deprecated` in favor of this class.
 
 ## Architecture Overview
 
@@ -271,9 +275,20 @@ Both implement `VectorIndex`: `add(id, vector)`, `search(vector, topK)`, `markDe
 
 ### EmbeddingProvider SPI
 
-Implement `EmbeddingProvider` to plug in any embedding source:
-- `OpenAIEmbeddingProvider` — calls OpenAI `/embeddings` (or compatible endpoint); zero extra deps
-- `OllamaEmbeddingProvider` — calls local Ollama `/api/embeddings`; dimension must be specified manually
+Implement `EmbeddingProvider` to plug in any embedding source. **Preferred**: `UniversalEmbeddingProvider` from `roguemap-embedding`:
+
+```java
+// OpenAI (default model text-embedding-3-small)
+new UniversalEmbeddingProvider(apiKey)
+
+// Any OpenAI-compatible service (Mistral, Jina, Voyage, Ollama, DashScope, etc.)
+new UniversalEmbeddingProvider(baseUrl, apiKey, model, dimension)
+// Pass dimension=0 to auto-detect on first embed() call
+```
+
+Known models (dimension auto-populated): `text-embedding-3-small` (1536), `text-embedding-3-large` (3072), `mistral-embed` (1024), `nomic-embed-text` (768), `jina-embeddings-v3` (1024), and others — see `KNOWN_MODELS` map in the class.
+
+`OpenAIEmbeddingProvider` and `OllamaEmbeddingProvider` in the memory modules are `@deprecated`; use `UniversalEmbeddingProvider` instead.
 
 ### mmap Record Format
 

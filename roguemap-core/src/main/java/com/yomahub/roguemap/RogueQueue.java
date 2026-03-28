@@ -51,6 +51,7 @@ public class RogueQueue<E> implements AutoCloseable {
     private final MmapAllocator mmapAllocator;
     private final Codec<E> elementCodec;
     private final AutoCheckpointManager autoCheckpointManager;
+    private volatile boolean closed = false;
 
     private RogueQueue(QueueStorage<E> storage, Allocator allocator,
                        MmapAllocator mmapAllocator, Codec<E> elementCodec,
@@ -313,6 +314,8 @@ public class RogueQueue<E> implements AutoCloseable {
 
     @Override
     public void close() {
+        if (closed) return;
+        closed = true;
         Throwable primaryException = null;
 
         // 1. 持久化模式：先保存元数据（此时 storage 和 allocator 仍可用）
