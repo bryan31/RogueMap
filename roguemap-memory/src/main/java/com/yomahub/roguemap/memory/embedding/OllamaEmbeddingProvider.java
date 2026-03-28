@@ -10,7 +10,12 @@ import java.nio.charset.StandardCharsets;
  *
  * 启动 Ollama 后，本地服务默认监听 http://localhost:11434
  * 示例：new OllamaEmbeddingProvider("http://localhost:11434", "nomic-embed-text", 768)
+ *
+ * @deprecated Use {@link com.yomahub.roguemap.embedding.UniversalEmbeddingProvider} instead.
+ *             Point it at Ollama's OpenAI-compatible endpoint: http://localhost:11434/v1
+ *             This class is retained for backwards compatibility only.
  */
+@Deprecated
 public class OllamaEmbeddingProvider implements EmbeddingProvider {
 
     private final String baseUrl;
