@@ -1,5 +1,6 @@
 package com.yomahub.roguemap.memory.embedding;
 
+import com.yomahub.roguemap.embedding.EmbeddingProvider;
 import java.io.*;
 import java.net.*;
 import java.nio.charset.StandardCharsets;

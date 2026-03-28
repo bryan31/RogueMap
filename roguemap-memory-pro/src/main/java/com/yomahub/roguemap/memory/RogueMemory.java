@@ -1,6 +1,6 @@
 package com.yomahub.roguemap.memory;
 
-import com.yomahub.roguemap.memory.embedding.EmbeddingProvider;
+import com.yomahub.roguemap.embedding.EmbeddingProvider;
 import com.yomahub.roguemap.memory.index.BM25Index;
 import com.yomahub.roguemap.memory.index.JVectorIndex;
 import com.yomahub.roguemap.memory.index.VectorIndex;

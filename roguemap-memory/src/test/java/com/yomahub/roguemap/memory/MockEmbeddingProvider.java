@@ -1,6 +1,6 @@
 package com.yomahub.roguemap.memory;
 
-import com.yomahub.roguemap.memory.embedding.EmbeddingProvider;
+import com.yomahub.roguemap.embedding.EmbeddingProvider;
 import java.util.Random;
 
 /** 测试用，返回固定维度的伪随机向量（基于 text hashCode 保证同文本同向量） */
