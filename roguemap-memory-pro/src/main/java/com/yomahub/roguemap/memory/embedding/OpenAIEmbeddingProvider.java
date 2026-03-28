@@ -6,11 +6,10 @@ import java.net.*;
 import java.nio.charset.StandardCharsets;
 
 /**
- * 调用 OpenAI Embeddings API（或兼容接口）的 EmbeddingProvider 实现
- *
- * 支持自定义 baseUrl，可接 Azure、本地代理、或其他 OpenAI 兼容服务。
- * 使用 Java 原生 HttpURLConnection，无额外依赖。
+ * @deprecated Use {@link com.yomahub.roguemap.embedding.UniversalEmbeddingProvider} instead.
+ *             This class is retained for backwards compatibility only.
  */
+@Deprecated
 public class OpenAIEmbeddingProvider implements EmbeddingProvider {
 
     private final String apiKey;

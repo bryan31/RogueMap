@@ -49,7 +49,7 @@ public class UniversalEmbeddingProvider implements EmbeddingProvider {
     private final String baseUrl;
     private final String apiKey;
     private final String model;
-    private int dimension;
+    private volatile int dimension;
     private volatile boolean dimensionDetected = false;
     private int connectTimeout = DEFAULT_CONNECT_TIMEOUT;
     private int readTimeout = DEFAULT_READ_TIMEOUT;
@@ -98,9 +98,10 @@ public class UniversalEmbeddingProvider implements EmbeddingProvider {
 
     @Override
     public float[] embed(String text) {
+        HttpURLConnection conn = null;
         try {
             URL url = new URL(baseUrl + "/embeddings");
-            HttpURLConnection conn = (HttpURLConnection) url.openConnection();
+            conn = (HttpURLConnection) url.openConnection();
             conn.setRequestMethod("POST");
             conn.setRequestProperty("Authorization", "Bearer " + apiKey);
             conn.setRequestProperty("Content-Type", "application/json");
@@ -123,6 +124,8 @@ public class UniversalEmbeddingProvider implements EmbeddingProvider {
             return parseEmbeddingFromJson(response);
         } catch (IOException e) {
             throw new RuntimeException("Failed to call Embedding API: " + baseUrl + "/embeddings", e);
+        } finally {
+            if (conn != null) conn.disconnect();
         }
     }
 
