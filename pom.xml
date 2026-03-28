@@ -45,6 +45,7 @@
         <module>roguemap-core</module>
         <module>roguemap-memory</module>
         <module>roguemap-memory-pro</module>
+        <module>roguemap-embedding</module>
     </modules>
 
     <properties>
