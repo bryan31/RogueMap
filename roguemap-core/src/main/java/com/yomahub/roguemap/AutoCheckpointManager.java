@@ -17,7 +17,7 @@ import java.util.concurrent.atomic.AtomicInteger;
  *
  * <p>两种模式可以同时配置，任一条件满足即触发 checkpoint。
  */
-class AutoCheckpointManager {
+public class AutoCheckpointManager {
 
     private static final ScheduledExecutorService SCHEDULER = Executors.newScheduledThreadPool(
             Runtime.getRuntime().availableProcessors(),
@@ -42,7 +42,7 @@ class AutoCheckpointManager {
      * @param intervalMillis     时间间隔（毫秒），-1 表示不启用时间模式
      * @param operationThreshold 操作次数阈值，-1 表示不启用操作计数模式
      */
-    AutoCheckpointManager(Runnable checkpointAction, long intervalMillis, int operationThreshold) {
+    public AutoCheckpointManager(Runnable checkpointAction, long intervalMillis, int operationThreshold) {
         this.checkpointAction = checkpointAction;
         this.intervalMillis = intervalMillis;
         this.operationThreshold = operationThreshold;
@@ -51,7 +51,7 @@ class AutoCheckpointManager {
     /**
      * 启动自动 checkpoint
      */
-    void start() {
+    public void start() {
         if (running) {
             return;
         }
@@ -70,7 +70,7 @@ class AutoCheckpointManager {
     /**
      * 停止自动 checkpoint
      */
-    void stop() {
+    public void stop() {
         running = false;
 
         // 停止定时任务
@@ -83,7 +83,7 @@ class AutoCheckpointManager {
     /**
      * 写操作后调用，用于操作计数模式
      */
-    void onWriteOperation() {
+    public void onWriteOperation() {
         if (!running || operationThreshold <= 0) {
             return;
         }

@@ -251,7 +251,7 @@ AI memory layer built on `roguemap-core`. Supports hybrid retrieval (vector + BM
 RogueMemory mem = RogueMemory.builder()
     .path("data/mem")
     .searchMode(SearchMode.HYBRID)         // HYBRID | VECTOR_ONLY | KEYWORD_ONLY
-    .embeddingProvider(new OpenAIEmbeddingProvider(apiKey, "text-embedding-3-small"))
+    .embeddingProvider(new UniversalEmbeddingProvider(apiKey))
     .build();
 
 String id = mem.add("content", metadata, "namespace");
@@ -305,16 +305,18 @@ Metadata encoding: `[pair_count: 2B][key_len: 2B][key bytes][val_len: 2B][val by
 ```
 com.yomahub.roguemap.memory/
 ├── RogueMemory.java            # Main API (Builder, add/search/delete/compact/close)
+├── OrdinalRegistry.java        # int-ordinal → UUID mapping for vector index entries
 ├── SearchMode.java             # HYBRID | VECTOR_ONLY | KEYWORD_ONLY
 ├── SearchOptions.java          # Query builder (query, topK, namespace, filter, minScore)
 ├── MemoryResult.java           # Search result (id, content, score, metadata)
 ├── MemoryEntry.java            # Internal entry model
 ├── embedding/
 │   ├── EmbeddingProvider.java  # SPI interface
-│   ├── OpenAIEmbeddingProvider.java
-│   └── OllamaEmbeddingProvider.java
+│   ├── OpenAIEmbeddingProvider.java   # @deprecated — use UniversalEmbeddingProvider
+│   └── OllamaEmbeddingProvider.java   # @deprecated — use UniversalEmbeddingProvider
 ├── index/
 │   ├── VectorIndex.java        # ANN index interface
+│   ├── ScoredOrdinal.java      # (ordinal, score) pair for index results
 │   ├── HnswVectorIndex.java    # (roguemap-memory only)
 │   ├── JVectorIndex.java       # (roguemap-memory-pro only)
 │   └── BM25Index.java          # BM25 keyword index (shared pattern)

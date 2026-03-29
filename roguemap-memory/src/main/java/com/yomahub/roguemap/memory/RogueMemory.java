@@ -7,6 +7,7 @@ import com.yomahub.roguemap.memory.index.VectorIndex;
 import com.yomahub.roguemap.memory.util.Tokenizer;
 import com.yomahub.roguemap.memory.MmapAllocator;
 import com.yomahub.roguemap.memory.UnsafeOps;
+import com.yomahub.roguemap.AutoCheckpointManager;
 import com.yomahub.roguemap.storage.MmapFileHeader;
 
 import java.io.*;
@@ -15,6 +16,7 @@ import java.nio.file.Files;
 import java.nio.file.StandardCopyOption;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.TimeUnit;
 
 /**
  * RogueMemory — 基于 mmap 的 AI 记忆存储，支持向量搜索 + BM25 关键词搜索。
@@ -52,6 +54,8 @@ public class RogueMemory implements AutoCloseable {
     private long[] offsetTable;             // ordinal → file offset of record start
     private long[] vectorOffsetTable;       // ordinal → file offset of vector floats within record
 
+    private final AutoCheckpointManager autoCheckpointManager;
+
     private volatile boolean closed = false;
 
     // ===== 构造（私有，通过 Builder 创建）=====
@@ -59,7 +63,8 @@ public class RogueMemory implements AutoCloseable {
     private RogueMemory(MmapAllocator allocator, String basePath,
                         SearchMode searchMode, EmbeddingProvider embeddingProvider,
                         BM25Index bm25Index, HnswVectorIndex vectorIndex,
-                        OrdinalRegistry ordinalRegistry, long[] offsetTable, long[] vectorOffsetTable) {
+                        OrdinalRegistry ordinalRegistry, long[] offsetTable, long[] vectorOffsetTable,
+                        long autoCheckpointInterval, int autoCheckpointOperations) {
         this.allocator = allocator;
         this.basePath = basePath;
         this.searchMode = searchMode;
@@ -69,6 +74,16 @@ public class RogueMemory implements AutoCloseable {
         this.ordinalRegistry = ordinalRegistry;
         this.offsetTable = offsetTable;
         this.vectorOffsetTable = vectorOffsetTable;
+
+        if (autoCheckpointInterval > 0 || autoCheckpointOperations > 0) {
+            this.autoCheckpointManager = new AutoCheckpointManager(
+                    this::saveIndexes,
+                    autoCheckpointInterval,
+                    autoCheckpointOperations);
+            this.autoCheckpointManager.start();
+        } else {
+            this.autoCheckpointManager = null;
+        }
     }
 
     // ===== 公开 API =====
@@ -101,6 +116,7 @@ public class RogueMemory implements AutoCloseable {
         if (vectorIndex != null && vector != null) {
             vectorIndex.add(ordinal, vector);
         }
+        if (autoCheckpointManager != null) autoCheckpointManager.onWriteOperation();
         return id;
     }
 
@@ -128,6 +144,7 @@ public class RogueMemory implements AutoCloseable {
         ordinalRegistry.release(id);
         offsetTable[ordinal] = 0;
         if (ordinal < vectorOffsetTable.length) vectorOffsetTable[ordinal] = 0;
+        if (autoCheckpointManager != null) autoCheckpointManager.onWriteOperation();
     }
 
     public void update(String id, String newContent) {
@@ -160,6 +177,7 @@ public class RogueMemory implements AutoCloseable {
         if (vectorIndex != null && vector != null) {
             vectorIndex.add(ordinal, vector);
         }
+        if (autoCheckpointManager != null) autoCheckpointManager.onWriteOperation();
     }
 
     public List<MemoryResult> search(String query, int topK) {
@@ -196,6 +214,7 @@ public class RogueMemory implements AutoCloseable {
     public void close() {
         if (closed) return;
         closed = true;
+        if (autoCheckpointManager != null) autoCheckpointManager.stop();
         saveIndexes();
         allocator.close();
         if (vectorIndex != null) vectorIndex.close();
@@ -331,7 +350,8 @@ public class RogueMemory implements AutoCloseable {
         }
 
         return new RogueMemory(compactedAlloc, basePath, searchMode,
-                embeddingProvider, newBm25, loadedHnsw, newRegistry, newOffsetTable, newVectorOffsetTable);
+                embeddingProvider, newBm25, loadedHnsw, newRegistry, newOffsetTable, newVectorOffsetTable,
+                -1, -1);
     }
 
     // ===== Builder =====
@@ -345,6 +365,8 @@ public class RogueMemory implements AutoCloseable {
         private EmbeddingProvider embeddingProvider;
         private SearchMode searchMode = SearchMode.HYBRID;
         private long fileSize = DEFAULT_FILE_SIZE;
+        private long autoCheckpointInterval = -1;
+        private int autoCheckpointOperations = -1;
 
         public MmapBuilder persistent(String path) {
             this.path = path;
@@ -363,6 +385,35 @@ public class RogueMemory implements AutoCloseable {
 
         public MmapBuilder allocateSize(long size) {
             this.fileSize = size;
+            return this;
+        }
+
+        /**
+         * 设置自动 checkpoint 的时间间隔。
+         *
+         * <p>可与 {@link #autoCheckpoint(int)} 同时配置，任一条件满足即触发 checkpoint。
+         *
+         * @param interval 时间间隔
+         * @param unit     时间单位
+         * @return this
+         */
+        public MmapBuilder autoCheckpoint(long interval, TimeUnit unit) {
+            if (interval <= 0) throw new IllegalArgumentException("interval must be positive");
+            this.autoCheckpointInterval = unit.toMillis(interval);
+            return this;
+        }
+
+        /**
+         * 设置自动 checkpoint 的写操作次数阈值。
+         *
+         * <p>可与 {@link #autoCheckpoint(long, TimeUnit)} 同时配置，任一条件满足即触发 checkpoint。
+         *
+         * @param operationCount 操作次数阈值
+         * @return this
+         */
+        public MmapBuilder autoCheckpoint(int operationCount) {
+            if (operationCount <= 0) throw new IllegalArgumentException("operationCount must be positive");
+            this.autoCheckpointOperations = operationCount;
             return this;
         }
 
@@ -416,7 +467,8 @@ public class RogueMemory implements AutoCloseable {
                 }
 
                 return new RogueMemory(allocator, path, searchMode, embeddingProvider, bm25, hnsw,
-                        ordinalRegistry, offsetTable, vectorOffsetTable);
+                        ordinalRegistry, offsetTable, vectorOffsetTable,
+                        autoCheckpointInterval, autoCheckpointOperations);
             } else {
                 MmapFileHeader header = new MmapFileHeader();
                 header.setMagicNumber(MmapFileHeader.MAGIC_NUMBER);
@@ -431,7 +483,8 @@ public class RogueMemory implements AutoCloseable {
                     hnsw = new HnswVectorIndex(embeddingProvider.getDimension(), vectorOffsetTable, allocator);
                 }
                 return new RogueMemory(allocator, path, searchMode, embeddingProvider, bm25, hnsw,
-                        ordinalRegistry, offsetTable, vectorOffsetTable);
+                        ordinalRegistry, offsetTable, vectorOffsetTable,
+                        autoCheckpointInterval, autoCheckpointOperations);
             }
         }
     }
