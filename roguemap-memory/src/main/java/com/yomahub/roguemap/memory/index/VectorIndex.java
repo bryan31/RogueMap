@@ -15,6 +15,15 @@ public interface VectorIndex {
         }
     }
 
+    class ScoredOrdinal {
+        public final int ordinal;
+        public final float score;
+        public ScoredOrdinal(int ordinal, float score) {
+            this.ordinal = ordinal;
+            this.score = score;
+        }
+    }
+
     /** 添加向量 */
     void add(String id, float[] vector);
 

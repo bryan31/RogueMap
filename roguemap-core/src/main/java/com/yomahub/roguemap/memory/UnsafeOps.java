@@ -241,4 +241,24 @@ public class UnsafeOps {
     public static void storeFence() {
         UNSAFE.storeFence();
     }
+
+    /**
+     * 写入float数组到内存
+     */
+    public static void putFloatArray(long address, float[] array) {
+        for (int i = 0; i < array.length; i++) {
+            UNSAFE.putFloat(address + (i * 4L), array[i]);
+        }
+    }
+
+    /**
+     * 从内存读取float数组
+     */
+    public static float[] getFloatArray(long address, int length) {
+        float[] array = new float[length];
+        for (int i = 0; i < length; i++) {
+            array[i] = UNSAFE.getFloat(address + (i * 4L));
+        }
+        return array;
+    }
 }
