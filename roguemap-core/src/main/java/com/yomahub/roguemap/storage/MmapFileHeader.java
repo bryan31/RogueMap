@@ -78,6 +78,9 @@ public class MmapFileHeader {
     public static final int MEMORY_BM25_INDEX_OFFSET_POS = 112;  // BM25 倒排索引在文件中的偏移量（8 bytes）
     public static final int MEMORY_HNSW_GENERATION_POS = 120;    // HNSW 文件的 generation 号（8 bytes），用于一致性校验
 
+    // ===== RogueMemory OrdinalRegistry（bytes 128-135）=====
+    public static final int ORDINAL_REGISTRY_OFFSET_POS = 128;   // OrdinalRegistry 在文件中的偏移量（8 bytes）
+
     // 数据字段大小（CRC32 覆盖的范围）
     private static final int DATA_FIELDS_SIZE = 48;
 
@@ -304,6 +307,26 @@ public class MmapFileHeader {
      */
     public static void setHnswGeneration(long address, long generation) {
         UnsafeOps.putLong(address + MEMORY_HNSW_GENERATION_POS, generation);
+    }
+
+    /**
+     * 获取 OrdinalRegistry 在文件中的偏移量
+     *
+     * @param address mmap 基地址
+     * @return OrdinalRegistry 偏移量（0 表示未存储）
+     */
+    public static long getOrdinalRegistryOffset(long address) {
+        return UnsafeOps.getLong(address + ORDINAL_REGISTRY_OFFSET_POS);
+    }
+
+    /**
+     * 设置 OrdinalRegistry 在文件中的偏移量
+     *
+     * @param address mmap 基地址
+     * @param offset  OrdinalRegistry 偏移量
+     */
+    public static void setOrdinalRegistryOffset(long address, long offset) {
+        UnsafeOps.putLong(address + ORDINAL_REGISTRY_OFFSET_POS, offset);
     }
 
     // ========== CRC32 计算 ==========
