@@ -48,8 +48,9 @@ public class RogueMemory implements AutoCloseable {
     private final BM25Index bm25Index;
     private HnswVectorIndex vectorIndex;    // null when KEYWORD_ONLY
 
-    /** id (String UUID) → file offset of record start */
-    private final Map<String, Long> idToFileOffset = new ConcurrentHashMap<>();
+    private OrdinalRegistry ordinalRegistry;
+    private long[] offsetTable;             // ordinal → file offset of record start
+    private long[] vectorOffsetTable;       // ordinal → file offset of vector floats within record
 
     private volatile boolean closed = false;
 
@@ -57,13 +58,17 @@ public class RogueMemory implements AutoCloseable {
 
     private RogueMemory(MmapAllocator allocator, String basePath,
                         SearchMode searchMode, EmbeddingProvider embeddingProvider,
-                        BM25Index bm25Index, HnswVectorIndex vectorIndex) {
+                        BM25Index bm25Index, HnswVectorIndex vectorIndex,
+                        OrdinalRegistry ordinalRegistry, long[] offsetTable, long[] vectorOffsetTable) {
         this.allocator = allocator;
         this.basePath = basePath;
         this.searchMode = searchMode;
         this.embeddingProvider = embeddingProvider;
         this.bm25Index = bm25Index;
         this.vectorIndex = vectorIndex;
+        this.ordinalRegistry = ordinalRegistry;
+        this.offsetTable = offsetTable;
+        this.vectorOffsetTable = vectorOffsetTable;
     }
 
     // ===== 公开 API =====
@@ -75,60 +80,86 @@ public class RogueMemory implements AutoCloseable {
     public String add(String content, Map<String, String> metadata, String namespace) {
         checkOpen();
         String id = UUID.randomUUID().toString();
+        int ordinal = ordinalRegistry.register(id);
+        growTablesIfNeeded(ordinal);
+
         long createdAt = System.currentTimeMillis();
         float[] vector = null;
         if (searchMode != SearchMode.KEYWORD_ONLY && embeddingProvider != null) {
             vector = embeddingProvider.embed(content);
         }
-        writeRecord(id, content, metadata, namespace, createdAt, 0L, vector, false);
-        indexEntry(id, content, vector);
+
+        long recordOffset = writeRecordToAllocator(allocator, id, content, metadata, namespace,
+                createdAt, 0L, vector, false);
+        offsetTable[ordinal] = allocator.getFileOffsetForAddress(recordOffset);
+
+        if (vector != null) {
+            vectorOffsetTable[ordinal] = computeVectorOffset(recordOffset, namespace, content, metadata);
+        }
+
+        bm25Index.addDocument(ordinal, content);
+        if (vectorIndex != null && vector != null) {
+            vectorIndex.add(ordinal, vector);
+        }
         return id;
     }
 
     public MemoryEntry get(String id) {
         checkOpen();
-        Long fileOffset = idToFileOffset.get(id);
-        if (fileOffset == null) return null;
-        return readRecord(fileOffset);
+        int ordinal = ordinalRegistry.getOrdinal(id);
+        if (ordinal == -1) return null;
+        if (ordinal >= offsetTable.length || offsetTable[ordinal] == 0) return null;
+        return readRecord(offsetTable[ordinal]);
     }
 
     public void delete(String id) {
         checkOpen();
-        Long fileOffset = idToFileOffset.get(id);
-        if (fileOffset == null) return;
-        // Mark deleted byte in mmap
+        int ordinal = ordinalRegistry.getOrdinal(id);
+        if (ordinal == -1) return;
+        if (ordinal >= offsetTable.length || offsetTable[ordinal] == 0) return;
+
+        long fileOffset = offsetTable[ordinal];
         long addr = allocator.getAddressForOffset(fileOffset);
         int deletedByteOffset = computeDeletedByteOffset(addr);
         UnsafeOps.putByte(addr + deletedByteOffset, (byte) 1);
-        // Remove from in-memory indexes
-        idToFileOffset.remove(id);
-        bm25Index.delete(id);
-        if (vectorIndex != null) vectorIndex.markDeleted(id);
+
+        bm25Index.removeDocument(ordinal);
+        if (vectorIndex != null) vectorIndex.markDeleted(ordinal);
+        ordinalRegistry.release(id);
+        offsetTable[ordinal] = 0;
+        if (ordinal < vectorOffsetTable.length) vectorOffsetTable[ordinal] = 0;
     }
 
     public void update(String id, String newContent) {
         checkOpen();
-        Long fileOffset = idToFileOffset.get(id);
-        if (fileOffset == null) return;
-        MemoryEntry old = readRecord(fileOffset);
+        int ordinal = ordinalRegistry.getOrdinal(id);
+        if (ordinal == -1) return;
+        if (ordinal >= offsetTable.length || offsetTable[ordinal] == 0) return;
+
+        MemoryEntry old = readRecord(offsetTable[ordinal]);
         if (old == null) return;
 
-        // Mark old record deleted
-        long addr = allocator.getAddressForOffset(fileOffset);
+        long addr = allocator.getAddressForOffset(offsetTable[ordinal]);
         int deletedByteOffset = computeDeletedByteOffset(addr);
         UnsafeOps.putByte(addr + deletedByteOffset, (byte) 1);
-        idToFileOffset.remove(id);
-        bm25Index.delete(id);
-        if (vectorIndex != null) vectorIndex.markDeleted(id);
 
-        // Write new record with same id, metadata, namespace
         float[] vector = null;
         if (searchMode != SearchMode.KEYWORD_ONLY && embeddingProvider != null) {
             vector = embeddingProvider.embed(newContent);
         }
-        writeRecordWithId(id, newContent, old.getMetadata(), old.getNamespace(),
-                old.getCreatedAt(), old.getExpireTime(), vector, false);
-        indexEntry(id, newContent, vector);
+
+        long recordOffset = writeRecordToAllocator(allocator, id, newContent, old.getMetadata(),
+                old.getNamespace(), old.getCreatedAt(), old.getExpireTime(), vector, false);
+        offsetTable[ordinal] = allocator.getFileOffsetForAddress(recordOffset);
+
+        if (vector != null) {
+            vectorOffsetTable[ordinal] = computeVectorOffset(recordOffset, old.getNamespace(), newContent, old.getMetadata());
+        }
+
+        bm25Index.addDocument(ordinal, newContent);
+        if (vectorIndex != null && vector != null) {
+            vectorIndex.add(ordinal, vector);
+        }
     }
 
     public List<MemoryResult> search(String query, int topK) {
@@ -181,7 +212,6 @@ public class RogueMemory implements AutoCloseable {
         String hnswPath = basePath + ".hnsw";
 
         MmapAllocator newAlloc = new MmapAllocator(tmpMemPath, newFileSize, false);
-        // Init header
         long newBase = newAlloc.getBaseAddress();
         MmapFileHeader newHeader = new MmapFileHeader();
         newHeader.setMagicNumber(MmapFileHeader.MAGIC_NUMBER);
@@ -190,13 +220,14 @@ public class RogueMemory implements AutoCloseable {
         newHeader.setCurrentOffset(MmapFileHeader.HEADER_SIZE);
         newHeader.write(newBase);
 
+        OrdinalRegistry newRegistry = new OrdinalRegistry();
+        long[] newOffsetTable = new long[1024];
+        long[] newVectorOffsetTable = new long[1024];
         BM25Index newBm25 = new BM25Index(1.2f, 0.75f);
         HnswVectorIndex newHnsw = (vectorIndex != null)
-            ? new HnswVectorIndex(embeddingProvider.getDimension(), HNSW_MAX_ELEMENTS)
+            ? new HnswVectorIndex(embeddingProvider.getDimension(), newVectorOffsetTable, newAlloc)
             : null;
-        Map<String, Long> newIdToOffset = new ConcurrentHashMap<>();
 
-        // Scan live records from current allocator
         long scanOffset = MmapFileHeader.HEADER_SIZE;
         long currentEnd = allocator.usedMemory();
         while (scanOffset < currentEnd) {
@@ -206,52 +237,66 @@ public class RogueMemory implements AutoCloseable {
             if (!rh.deleted) {
                 MemoryEntry entry = parseRecordFull(addr, rh);
                 if (entry != null && !entry.isExpired()) {
-                    // Write to new allocator
+                    int ordinal = newRegistry.register(entry.getId());
+                    if (ordinal >= newOffsetTable.length) {
+                        newOffsetTable = Arrays.copyOf(newOffsetTable, ordinal + 1);
+                        newVectorOffsetTable = Arrays.copyOf(newVectorOffsetTable, ordinal + 1);
+                    }
                     long newAddr = writeRecordToAllocator(newAlloc, entry.getId(),
                             entry.getContent(), entry.getMetadata(), entry.getNamespace(),
                             entry.getCreatedAt(), entry.getExpireTime(), entry.getVector(), false);
-                    long newOffset = newAlloc.getFileOffsetForAddress(newAddr);
-                    newIdToOffset.put(entry.getId(), newOffset);
-                    newBm25.add(entry.getId(), entry.getContent());
+                    newOffsetTable[ordinal] = newAlloc.getFileOffsetForAddress(newAddr);
+                    if (entry.getVector() != null) {
+                        newVectorOffsetTable[ordinal] = newOffsetTable[ordinal] + computeVectorOffsetInRecord(entry);
+                    }
+                    newBm25.addDocument(ordinal, entry.getContent());
                     if (newHnsw != null && entry.getVector() != null) {
-                        newHnsw.add(entry.getId(), entry.getVector());
+                        newHnsw.add(ordinal, entry.getVector());
                     }
                 }
             }
             scanOffset += rh.totalSize;
         }
 
-        // Save BM25 to new mmap
+        long newOrdinalRegistryOffset = 0;
+        try {
+            byte[] regData = newRegistry.serialize();
+            long regAddr = newAlloc.allocate(4 + regData.length);
+            UnsafeOps.putInt(regAddr, regData.length);
+            UnsafeOps.copyFromArray(regData, 0, regAddr + 4, regData.length);
+            newOrdinalRegistryOffset = newAlloc.getFileOffsetForAddress(regAddr);
+        } catch (IOException e) {
+            throw new RuntimeException("compact: OrdinalRegistry serialize failed", e);
+        }
+
         long newBm25FileOffset = 0;
         try {
             byte[] bm25Data = newBm25.serialize();
-            int bm25Size = bm25Data.length;
-            long bm25Addr = newAlloc.allocate(4 + bm25Size);
-            UnsafeOps.putInt(bm25Addr, bm25Size);
-            UnsafeOps.copyFromArray(bm25Data, 0, bm25Addr + 4, bm25Size);
+            long bm25Addr = newAlloc.allocate(4 + bm25Data.length);
+            UnsafeOps.putInt(bm25Addr, bm25Data.length);
+            UnsafeOps.copyFromArray(bm25Data, 0, bm25Addr + 4, bm25Data.length);
             newBm25FileOffset = newAlloc.getFileOffsetForAddress(bm25Addr);
         } catch (IOException e) {
             throw new RuntimeException("compact: BM25 serialize failed", e);
         }
 
-        // Save HNSW to tmp file
         long newGeneration = System.currentTimeMillis();
         if (newHnsw != null) {
             try (FileOutputStream fos = new FileOutputStream(tmpHnswPath)) {
-                // serialize() writes [8B placeholder][deletedCount][ids][hnswData]
                 newHnsw.serialize(fos);
             } catch (IOException e) {
                 throw new RuntimeException("compact: HNSW serialize failed", e);
             }
         }
 
-        // Update header currentOffset (write() zeros bytes 96-4095)
         MmapFileHeader hdr = newAlloc.readHeader();
         hdr.setCurrentOffset(newAlloc.usedMemory());
-        hdr.setEntryCount(newIdToOffset.size());
+        hdr.setEntryCount(newRegistry.capacity());
         hdr.write(newBase);
 
-        // Write extension fields AFTER header.write() since write() zeros them
+        if (newOrdinalRegistryOffset != 0) {
+            MmapFileHeader.setOrdinalRegistryOffset(newBase, newOrdinalRegistryOffset);
+        }
         if (newBm25FileOffset != 0) {
             MmapFileHeader.setBm25IndexOffset(newBase, newBm25FileOffset);
         }
@@ -262,7 +307,6 @@ public class RogueMemory implements AutoCloseable {
         newAlloc.flush();
         newAlloc.close();
 
-        // Rename tmp files to final
         try {
             Files.move(new File(tmpMemPath).toPath(), new File(memPath).toPath(),
                     StandardCopyOption.REPLACE_EXISTING);
@@ -274,24 +318,20 @@ public class RogueMemory implements AutoCloseable {
             throw new RuntimeException("compact: rename failed", e);
         }
 
-        // Open new allocator on renamed file
         MmapAllocator compactedAlloc = new MmapAllocator(memPath, newFileSize, false);
         compactedAlloc.restoreOffset(compactedAlloc.readHeader().getCurrentOffset());
 
-        // Load HNSW from renamed file
         HnswVectorIndex loadedHnsw = null;
         if (newHnsw != null) {
             try (FileInputStream fis = new FileInputStream(hnswPath)) {
-                loadedHnsw = HnswVectorIndex.load(fis, embeddingProvider.getDimension());
+                loadedHnsw = HnswVectorIndex.deserialize(fis, embeddingProvider.getDimension(), newVectorOffsetTable, compactedAlloc);
             } catch (IOException e) {
                 throw new RuntimeException("compact: HNSW load failed", e);
             }
         }
 
-        RogueMemory compacted = new RogueMemory(compactedAlloc, basePath, searchMode,
-                embeddingProvider, newBm25, loadedHnsw);
-        compacted.idToFileOffset.putAll(newIdToOffset);
-        return compacted;
+        return new RogueMemory(compactedAlloc, basePath, searchMode,
+                embeddingProvider, newBm25, loadedHnsw, newRegistry, newOffsetTable, newVectorOffsetTable);
     }
 
     // ===== Builder =====
@@ -334,12 +374,14 @@ public class RogueMemory implements AutoCloseable {
             MmapAllocator allocator = new MmapAllocator(memPath, fileSize, false);
             long baseAddr = allocator.getBaseAddress();
 
+            OrdinalRegistry ordinalRegistry = new OrdinalRegistry();
+            long[] offsetTable = new long[1024];
+            long[] vectorOffsetTable = new long[1024];
             BM25Index bm25 = new BM25Index(1.2f, 0.75f);
             HnswVectorIndex hnsw = null;
 
             boolean isExisting = allocator.isExistingFile();
             if (isExisting) {
-                // Restore
                 MmapFileHeader header = allocator.readHeader();
                 allocator.restoreOffset(header.getCurrentOffset());
                 MmapFileHeader.markOpen(baseAddr);
@@ -347,23 +389,35 @@ public class RogueMemory implements AutoCloseable {
                 int dirtyFlag = MmapFileHeader.getDirtyFlag(baseAddr);
                 if (dirtyFlag == 1) {
                     // Dirty: full scan to rebuild
-                    hnsw = buildHnswFromScan(allocator, embeddingProvider, searchMode, bm25);
+                    RebuildResult result = rebuildFromScan(allocator, embeddingProvider, searchMode);
+                    ordinalRegistry = result.ordinalRegistry;
+                    offsetTable = result.offsetTable;
+                    vectorOffsetTable = result.vectorOffsetTable;
+                    bm25 = result.bm25Index;
+                    hnsw = result.hnswIndex;
                 } else {
-                    // Clean: load BM25 from mmap, HNSW from file
+                    // Clean: restore from saved indexes
+                    long ordinalRegistryOffset = MmapFileHeader.getOrdinalRegistryOffset(baseAddr);
+                    if (ordinalRegistryOffset > 0) {
+                        ordinalRegistry = loadOrdinalRegistry(allocator, ordinalRegistryOffset);
+                    }
+
+                    RebuildResult result = rebuildOffsetTables(allocator, ordinalRegistry);
+                    offsetTable = result.offsetTable;
+                    vectorOffsetTable = result.vectorOffsetTable;
+
                     bm25 = loadBm25(allocator, baseAddr);
-                    hnsw = loadHnsw(allocator, baseAddr, hnswPath, embeddingProvider, searchMode);
+                    hnsw = loadHnsw(allocator, baseAddr, hnswPath, embeddingProvider, searchMode, vectorOffsetTable);
+
                     if (hnsw == null && searchMode != SearchMode.KEYWORD_ONLY) {
-                        // HNSW file missing or generation mismatch: rebuild from scan
-                        hnsw = buildHnswFromScan(allocator, embeddingProvider, searchMode, null);
+                        RebuildResult fullResult = rebuildFromScan(allocator, embeddingProvider, searchMode);
+                        hnsw = fullResult.hnswIndex;
                     }
                 }
-                // Rebuild idToFileOffset from scan
-                Map<String, Long> idMap = scanIdOffsets(allocator);
-                RogueMemory rm = new RogueMemory(allocator, path, searchMode, embeddingProvider, bm25, hnsw);
-                rm.idToFileOffset.putAll(idMap);
-                return rm;
+
+                return new RogueMemory(allocator, path, searchMode, embeddingProvider, bm25, hnsw,
+                        ordinalRegistry, offsetTable, vectorOffsetTable);
             } else {
-                // New file: init header
                 MmapFileHeader header = new MmapFileHeader();
                 header.setMagicNumber(MmapFileHeader.MAGIC_NUMBER);
                 header.setVersion(MmapFileHeader.VERSION);
@@ -373,9 +427,11 @@ public class RogueMemory implements AutoCloseable {
                 MmapFileHeader.markOpen(baseAddr);
 
                 if (searchMode != SearchMode.KEYWORD_ONLY && embeddingProvider != null) {
-                    hnsw = new HnswVectorIndex(embeddingProvider.getDimension(), HNSW_MAX_ELEMENTS);
+                    ensureDimension(embeddingProvider);
+                    hnsw = new HnswVectorIndex(embeddingProvider.getDimension(), vectorOffsetTable, allocator);
                 }
-                return new RogueMemory(allocator, path, searchMode, embeddingProvider, bm25, hnsw);
+                return new RogueMemory(allocator, path, searchMode, embeddingProvider, bm25, hnsw,
+                        ordinalRegistry, offsetTable, vectorOffsetTable);
             }
         }
     }
@@ -484,27 +540,10 @@ public class RogueMemory implements AutoCloseable {
     }
 
     /** Write a new record (generates new UUID) */
-    private void writeRecord(String id, String content, Map<String, String> metadata,
-                             String namespace, long createdAt, long expireTime,
-                             float[] vector, boolean deleted) {
-        long addr = writeRecordToAllocator(allocator, id, content, metadata, namespace,
-                createdAt, expireTime, vector, deleted);
-        long fileOffset = allocator.getFileOffsetForAddress(addr);
-        idToFileOffset.put(id, fileOffset);
-    }
-
-    /** Write a record with a specific id (for update) */
-    private void writeRecordWithId(String id, String content, Map<String, String> metadata,
-                                   String namespace, long createdAt, long expireTime,
-                                   float[] vector, boolean deleted) {
-        writeRecord(id, content, metadata, namespace, createdAt, expireTime, vector, deleted);
-    }
-
-    /** Core write logic: allocate space and write record bytes. Returns physical address. */
-    private static long writeRecordToAllocator(MmapAllocator alloc, String id, String content,
-                                               Map<String, String> metadata, String namespace,
-                                               long createdAt, long expireTime,
-                                               float[] vector, boolean deleted) {
+    private long writeRecordToAllocator(MmapAllocator alloc, String id, String content,
+                                        Map<String, String> metadata, String namespace,
+                                        long createdAt, long expireTime,
+                                        float[] vector, boolean deleted) {
         byte[] nsBytes = namespace.getBytes(StandardCharsets.UTF_8);
         byte[] contentBytes = content.getBytes(StandardCharsets.UTF_8);
         byte[] metaBytes = encodeMetadata(metadata);
@@ -534,11 +573,20 @@ public class RogueMemory implements AutoCloseable {
         return addr;
     }
 
-    private void indexEntry(String id, String content, float[] vector) {
-        bm25Index.add(id, content);
-        if (vectorIndex != null && vector != null) {
-            vectorIndex.add(id, vector);
+    private void growTablesIfNeeded(int ordinal) {
+        if (ordinal >= offsetTable.length) {
+            int newSize = Math.max(ordinal + 1, offsetTable.length * 2);
+            offsetTable = Arrays.copyOf(offsetTable, newSize);
+            vectorOffsetTable = Arrays.copyOf(vectorOffsetTable, newSize);
         }
+    }
+
+    private long computeVectorOffset(long recordAddr, String namespace, String content, Map<String, String> metadata) {
+        byte[] nsBytes = namespace.getBytes(StandardCharsets.UTF_8);
+        byte[] contentBytes = content.getBytes(StandardCharsets.UTF_8);
+        byte[] metaBytes = encodeMetadata(metadata);
+        long offset = 8 + 16 + 2 + nsBytes.length + 4 + contentBytes.length + 4 + metaBytes.length + 4;
+        return allocator.getFileOffsetForAddress(recordAddr) + offset;
     }
 
     // ===== Metadata encoding =====
@@ -590,8 +638,33 @@ public class RogueMemory implements AutoCloseable {
 
     // ===== Scan helpers =====
 
-    private static Map<String, Long> scanIdOffsets(MmapAllocator alloc) {
-        Map<String, Long> map = new ConcurrentHashMap<>();
+    private static class RebuildResult {
+        OrdinalRegistry ordinalRegistry;
+        long[] offsetTable;
+        long[] vectorOffsetTable;
+        BM25Index bm25Index;
+        HnswVectorIndex hnswIndex;
+    }
+
+    private static OrdinalRegistry loadOrdinalRegistry(MmapAllocator alloc, long fileOffset) {
+        try {
+            long addr = alloc.getAddressForOffset(fileOffset);
+            int size = UnsafeOps.getInt(addr);
+            byte[] data = new byte[size];
+            UnsafeOps.copyToArray(addr + 4, data, 0, size);
+            return OrdinalRegistry.deserialize(data);
+        } catch (Exception e) {
+            return new OrdinalRegistry();
+        }
+    }
+
+    private static RebuildResult rebuildOffsetTables(MmapAllocator alloc, OrdinalRegistry registry) {
+        RebuildResult result = new RebuildResult();
+        result.ordinalRegistry = registry;
+        int capacity = registry.capacity();
+        result.offsetTable = new long[Math.max(capacity, 1024)];
+        result.vectorOffsetTable = new long[Math.max(capacity, 1024)];
+
         long scanOffset = MmapFileHeader.HEADER_SIZE;
         long end = alloc.usedMemory();
         while (scanOffset < end) {
@@ -599,19 +672,54 @@ public class RogueMemory implements AutoCloseable {
             RecordHeader rh = parseRecordHeader(addr);
             if (rh == null) break;
             if (!rh.deleted) {
-                map.put(rh.id, scanOffset);
+                int ordinal = registry.getOrdinal(rh.id);
+                if (ordinal >= 0) {
+                    if (ordinal >= result.offsetTable.length) {
+                        result.offsetTable = Arrays.copyOf(result.offsetTable, ordinal + 1);
+                        result.vectorOffsetTable = Arrays.copyOf(result.vectorOffsetTable, ordinal + 1);
+                    }
+                    result.offsetTable[ordinal] = scanOffset;
+                    MemoryEntry entry = parseRecordFull(addr, rh);
+                    if (entry != null && entry.getVector() != null) {
+                        result.vectorOffsetTable[ordinal] = scanOffset + computeVectorOffsetInRecord(entry);
+                    }
+                }
             }
             scanOffset += rh.totalSize;
         }
-        return map;
+        return result;
     }
 
-    private static HnswVectorIndex buildHnswFromScan(MmapAllocator alloc,
-                                                      EmbeddingProvider provider,
-                                                      SearchMode mode,
-                                                      BM25Index bm25ToPopulate) {
-        if (mode == SearchMode.KEYWORD_ONLY || provider == null) return null;
-        HnswVectorIndex hnsw = new HnswVectorIndex(provider.getDimension(), HNSW_MAX_ELEMENTS);
+    private static long computeVectorOffsetInRecord(MemoryEntry entry) {
+        byte[] nsBytes = entry.getNamespace().getBytes(StandardCharsets.UTF_8);
+        byte[] contentBytes = entry.getContent().getBytes(StandardCharsets.UTF_8);
+        byte[] metaBytes = encodeMetadata(entry.getMetadata());
+        return 8 + 16 + 2 + nsBytes.length + 4 + contentBytes.length + 4 + metaBytes.length + 4;
+    }
+
+    /**
+     * If the provider's dimension is unknown (0), trigger auto-detection by
+     * making a minimal embed() call so that getDimension() returns a valid value.
+     */
+    private static void ensureDimension(EmbeddingProvider provider) {
+        if (provider.getDimension() == 0) {
+            provider.embed("a");
+        }
+    }
+
+    private static RebuildResult rebuildFromScan(MmapAllocator alloc, EmbeddingProvider provider, SearchMode mode) {
+        RebuildResult result = new RebuildResult();
+        result.ordinalRegistry = new OrdinalRegistry();
+        result.offsetTable = new long[1024];
+        result.vectorOffsetTable = new long[1024];
+        result.bm25Index = new BM25Index(1.2f, 0.75f);
+        result.hnswIndex = null;
+
+        if (mode != SearchMode.KEYWORD_ONLY && provider != null) {
+            ensureDimension(provider);
+            result.hnswIndex = new HnswVectorIndex(provider.getDimension(), result.vectorOffsetTable, alloc);
+        }
+
         long scanOffset = MmapFileHeader.HEADER_SIZE;
         long end = alloc.usedMemory();
         while (scanOffset < end) {
@@ -621,39 +729,30 @@ public class RogueMemory implements AutoCloseable {
             if (!rh.deleted) {
                 MemoryEntry entry = parseRecordFull(addr, rh);
                 if (entry != null && !entry.isExpired()) {
-                    if (entry.getVector() != null) {
-                        hnsw.add(entry.getId(), entry.getVector());
+                    int ordinal = result.ordinalRegistry.register(entry.getId());
+                    if (ordinal >= result.offsetTable.length) {
+                        result.offsetTable = Arrays.copyOf(result.offsetTable, ordinal + 1);
+                        result.vectorOffsetTable = Arrays.copyOf(result.vectorOffsetTable, ordinal + 1);
                     }
-                    if (bm25ToPopulate != null) {
-                        bm25ToPopulate.add(entry.getId(), entry.getContent());
+                    result.offsetTable[ordinal] = scanOffset;
+                    if (entry.getVector() != null) {
+                        result.vectorOffsetTable[ordinal] = scanOffset + computeVectorOffsetInRecord(entry);
+                    }
+                    result.bm25Index.addDocument(ordinal, entry.getContent());
+                    if (result.hnswIndex != null && entry.getVector() != null) {
+                        result.hnswIndex.add(ordinal, entry.getVector());
                     }
                 }
             }
             scanOffset += rh.totalSize;
         }
-        return hnsw;
+        return result;
     }
 
     private static BM25Index loadBm25(MmapAllocator alloc, long baseAddr) {
         long bm25FileOffset = MmapFileHeader.getBm25IndexOffset(baseAddr);
         if (bm25FileOffset == 0) {
-            // No saved BM25 — rebuild from scan
-            BM25Index bm25 = new BM25Index(1.2f, 0.75f);
-            long scanOffset = MmapFileHeader.HEADER_SIZE;
-            long end = alloc.usedMemory();
-            while (scanOffset < end) {
-                long addr = alloc.getAddressForOffset(scanOffset);
-                RecordHeader rh = parseRecordHeader(addr);
-                if (rh == null) break;
-                if (!rh.deleted) {
-                    MemoryEntry entry = parseRecordFull(addr, rh);
-                    if (entry != null && !entry.isExpired()) {
-                        bm25.add(entry.getId(), entry.getContent());
-                    }
-                }
-                scanOffset += rh.totalSize;
-            }
-            return bm25;
+            return new BM25Index(1.2f, 0.75f);
         }
         try {
             long bm25Addr = alloc.getAddressForOffset(bm25FileOffset);
@@ -668,14 +767,14 @@ public class RogueMemory implements AutoCloseable {
 
     private static HnswVectorIndex loadHnsw(MmapAllocator alloc, long baseAddr,
                                              String hnswPath, EmbeddingProvider provider,
-                                             SearchMode mode) {
+                                             SearchMode mode, long[] vectorOffsetTable) {
         if (mode == SearchMode.KEYWORD_ONLY || provider == null) return null;
         File hnswFile = new File(hnswPath);
         if (!hnswFile.exists()) return null;
         long storedGen = MmapFileHeader.getHnswGeneration(baseAddr);
-        if (storedGen == 0) return null; // never saved
+        if (storedGen == 0) return null;
         try (FileInputStream fis = new FileInputStream(hnswFile)) {
-            return HnswVectorIndex.load(fis, provider.getDimension());
+            return HnswVectorIndex.deserialize(fis, provider.getDimension(), vectorOffsetTable, alloc);
         } catch (IOException e) {
             return null;
         }
@@ -686,7 +785,20 @@ public class RogueMemory implements AutoCloseable {
     private void saveIndexes() {
         long baseAddr = allocator.getBaseAddress();
 
-        // Save BM25 to mmap (allocate space first, before writing header)
+        // Save OrdinalRegistry to mmap
+        long ordinalRegistryOffset = 0;
+        try {
+            byte[] regData = ordinalRegistry.serialize();
+            int regSize = regData.length;
+            long regAddr = allocator.allocate(4 + regSize);
+            UnsafeOps.putInt(regAddr, regSize);
+            UnsafeOps.copyFromArray(regData, 0, regAddr + 4, regSize);
+            ordinalRegistryOffset = allocator.getFileOffsetForAddress(regAddr);
+        } catch (IOException e) {
+            // non-fatal
+        }
+
+        // Save BM25 to mmap
         long bm25FileOffset = 0;
         try {
             byte[] bm25Data = bm25Index.serialize();
@@ -704,22 +816,22 @@ public class RogueMemory implements AutoCloseable {
         if (vectorIndex != null) {
             String hnswPath = basePath + ".hnsw";
             try (FileOutputStream fos = new FileOutputStream(hnswPath)) {
-                // serialize() writes [8B placeholder][deletedCount][ids][hnswData]
-                // We use the header field for generation tracking, not the placeholder
                 vectorIndex.serialize(fos);
             } catch (IOException e) {
-                // non-fatal
                 generation = 0;
             }
         }
 
-        // Write main header (this zeros bytes 96-4095 including our extension fields)
+        // Write main header
         MmapFileHeader header = allocator.readHeader();
         header.setCurrentOffset(allocator.usedMemory());
-        header.setEntryCount(idToFileOffset.size());
-        header.write(baseAddr);  // write() clears dirtyFlag and zeros bytes 96-4095
+        header.setEntryCount(ordinalRegistry.capacity());
+        header.write(baseAddr);
 
-        // Write extension fields AFTER header.write() since write() zeros them
+        // Write extension fields AFTER header.write()
+        if (ordinalRegistryOffset != 0) {
+            MmapFileHeader.setOrdinalRegistryOffset(baseAddr, ordinalRegistryOffset);
+        }
         if (bm25FileOffset != 0) {
             MmapFileHeader.setBm25IndexOffset(baseAddr, bm25FileOffset);
         }
@@ -735,25 +847,30 @@ public class RogueMemory implements AutoCloseable {
     private List<MemoryResult> vectorSearch(String query, int candidates, SearchOptions options) {
         if (vectorIndex == null || embeddingProvider == null) return Collections.emptyList();
         float[] qv = embeddingProvider.embed(query);
-        List<VectorIndex.ScoredId> raw = vectorIndex.search(qv, candidates);
+        List<VectorIndex.ScoredOrdinal> raw = vectorIndex.searchByOrdinal(qv, candidates);
         List<MemoryResult> results = new ArrayList<>();
-        for (VectorIndex.ScoredId s : raw) {
-            MemoryEntry e = get(s.id);
-            if (e != null && !e.isExpired()) {
-                results.add(toResult(e, s.score));
+        for (VectorIndex.ScoredOrdinal s : raw) {
+            String id = ordinalRegistry.getId(s.ordinal);
+            if (id != null) {
+                MemoryEntry e = get(id);
+                if (e != null && !e.isExpired()) {
+                    results.add(toResult(e, s.score));
+                }
             }
         }
         return results;
     }
 
     private List<MemoryResult> keywordSearch(String query, int candidates, SearchOptions options) {
-        List<String> tokens = Tokenizer.tokenize(query);
-        List<BM25Index.ScoredId> raw = bm25Index.search(tokens, candidates);
+        List<BM25Index.ScoredOrdinal> raw = bm25Index.search(query, candidates);
         List<MemoryResult> results = new ArrayList<>();
-        for (BM25Index.ScoredId s : raw) {
-            MemoryEntry e = get(s.id);
-            if (e != null && !e.isExpired()) {
-                results.add(toResult(e, s.score));
+        for (BM25Index.ScoredOrdinal s : raw) {
+            String id = ordinalRegistry.getId(s.ordinal);
+            if (id != null) {
+                MemoryEntry e = get(id);
+                if (e != null && !e.isExpired()) {
+                    results.add(toResult(e, s.score));
+                }
             }
         }
         return results;

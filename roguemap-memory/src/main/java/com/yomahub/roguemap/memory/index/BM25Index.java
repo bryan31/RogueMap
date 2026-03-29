@@ -249,4 +249,13 @@ public class BM25Index {
         }
         return results;
     }
+
+    public static class ScoredOrdinal {
+        public final int ordinal;
+        public final float score;
+        public ScoredOrdinal(int ordinal, double score) {
+            this.ordinal = ordinal;
+            this.score = (float) score;
+        }
+    }
 }
