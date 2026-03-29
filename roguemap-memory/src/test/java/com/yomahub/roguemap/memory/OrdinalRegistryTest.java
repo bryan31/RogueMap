@@ -69,6 +69,35 @@ class OrdinalRegistryTest {
     }
 
     @Test
+    void duplicateRegistrationReturnsSameOrdinal() {
+        OrdinalRegistry reg = new OrdinalRegistry();
+        String uuid = UUID.randomUUID().toString();
+        int first = reg.register(uuid);
+        int second = reg.register(uuid);
+        assertEquals(first, second);
+        assertEquals(1, reg.capacity()); // only one ordinal allocated
+    }
+
+    @Test
+    void deserializeReconstructsFreeList() throws Exception {
+        OrdinalRegistry reg = new OrdinalRegistry();
+        String a = UUID.randomUUID().toString();
+        String b = UUID.randomUUID().toString();
+        String c = UUID.randomUUID().toString();
+        reg.register(a); // ordinal 0
+        reg.register(b); // ordinal 1
+        reg.release(a);  // ordinal 0 in freeList
+
+        byte[] data = reg.serialize();
+        OrdinalRegistry restored = OrdinalRegistry.deserialize(data);
+
+        // ordinal 0 should be reused for next registration
+        int oc = restored.register(c);
+        assertEquals(0, oc);
+        assertEquals(c, restored.getId(0));
+    }
+
+    @Test
     void serializeSkipsReleasedEntries() throws Exception {
         OrdinalRegistry reg = new OrdinalRegistry();
         String a = UUID.randomUUID().toString();

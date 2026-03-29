@@ -26,6 +26,9 @@ public class OrdinalRegistry {
     public int register(String uuid) {
         lock.writeLock().lock();
         try {
+            // Critical 1: if already registered, return existing ordinal without allocating a new one
+            Integer existing = idToOrdinal.get(uuid);
+            if (existing != null) return existing;
             int ordinal;
             if (freeTop > 0) {
                 ordinal = freeList[--freeTop];
@@ -74,7 +77,7 @@ public class OrdinalRegistry {
     public String getId(int ordinal) {
         lock.readLock().lock();
         try {
-            if (ordinal < 0 || ordinal >= idTable.length) return null;
+            if (ordinal < 0 || ordinal >= nextOrdinal) return null;
             return idTable[ordinal];
         } finally {
             lock.readLock().unlock();
@@ -92,7 +95,7 @@ public class OrdinalRegistry {
         lock.readLock().lock();
         try {
             int count = idToOrdinal.size();
-            ByteArrayOutputStream baos = new ByteArrayOutputStream(count * 20);
+            ByteArrayOutputStream baos = new ByteArrayOutputStream(4 + count * 20);
             DataOutputStream dos = new DataOutputStream(baos);
             dos.writeInt(count);
             for (int i = 0; i < nextOrdinal; i++) {
@@ -128,6 +131,15 @@ public class OrdinalRegistry {
             if (ordinal > maxOrdinal) maxOrdinal = ordinal;
         }
         reg.nextOrdinal = maxOrdinal + 1;
+        // Critical 2: rebuild freeList from gaps in idTable
+        for (int i = 0; i < reg.nextOrdinal; i++) {
+            if (reg.idTable[i] == null) {
+                if (reg.freeTop >= reg.freeList.length) {
+                    reg.freeList = Arrays.copyOf(reg.freeList, reg.freeList.length * 2);
+                }
+                reg.freeList[reg.freeTop++] = i;
+            }
+        }
         return reg;
     }
 }
