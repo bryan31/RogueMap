@@ -109,7 +109,7 @@ class JVectorIndexTest {
 
         // Deserialize
         ByteArrayInputStream bais = new ByteArrayInputStream(baos.toByteArray());
-        JVectorIndex loaded = JVectorIndex.deserialize(bais, vectorOffsets, allocator);
+        JVectorIndex loaded = JVectorIndex.deserialize(bais, dimension, vectorOffsets, allocator);
 
         // Search should work (graph rebuilt)
         List<VectorIndex.ScoredOrdinal> results = loaded.searchByOrdinal(v0, 2);

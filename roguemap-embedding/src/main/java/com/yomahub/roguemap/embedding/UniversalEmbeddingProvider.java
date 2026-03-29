@@ -69,6 +69,17 @@ public class UniversalEmbeddingProvider implements EmbeddingProvider {
     }
 
     /**
+     * Any OpenAI-compatible service -- dimension auto-detected on first embed() call
+     *
+     * @param baseUrl service endpoint (e.g. "https://api.mistral.ai/v1")
+     * @param apiKey  API key
+     * @param model   model name (e.g. "mistral-embed")
+     */
+    public UniversalEmbeddingProvider(String baseUrl, String apiKey, String model) {
+        this(baseUrl, apiKey, model, dimensionForModel(model));
+    }
+
+    /**
      * Full constructor -- works with any OpenAI-compatible service
      *
      * @param baseUrl   service endpoint (e.g. "https://api.mistral.ai/v1")

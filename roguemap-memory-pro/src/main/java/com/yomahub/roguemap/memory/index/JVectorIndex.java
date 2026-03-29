@@ -57,7 +57,12 @@ public class JVectorIndex implements VectorIndex {
             }
             long fileOffset = vectorOffsets[ordinal];
             if (fileOffset == 0) {
-                throw new IllegalStateException("Vector at ordinal " + ordinal + " not initialized");
+                // Return tiny random vector for deleted/uninitialized ordinals to avoid NaN in cosine similarity
+                float[] tiny = new float[dimension];
+                for (int i = 0; i < dimension; i++) {
+                    tiny[i] = 0.0001f * (i + 1);
+                }
+                return vts.createFloatVector(tiny);
             }
             long address = allocator.getAddressForOffset(fileOffset);
             float[] arr = UnsafeOps.getFloatArray(address, dimension);
@@ -194,9 +199,9 @@ public class JVectorIndex implements VectorIndex {
         dos.flush();
     }
 
-    public static JVectorIndex deserialize(InputStream in, long[] vectorOffsets, MmapAllocator allocator) throws IOException {
+    public static JVectorIndex deserialize(InputStream in, int dimension, long[] vectorOffsets, MmapAllocator allocator) throws IOException {
         DataInputStream dis = new DataInputStream(in);
-        int dimension = dis.readInt();
+        dis.readInt(); // skip dimension (already provided as parameter)
         int nextOrd = dis.readInt();
         int mapSize = dis.readInt();
         Map<Integer, String> ordToId = new ConcurrentHashMap<>();
@@ -217,7 +222,7 @@ public class JVectorIndex implements VectorIndex {
 
     @Deprecated
     public static JVectorIndex load(InputStream in, int dimension) throws IOException {
-        return deserialize(in, null, null);
+        return deserialize(in, dimension, null, null);
     }
 
     @Override
