@@ -578,6 +578,9 @@ public class RogueMemory implements AutoCloseable {
             int newSize = Math.max(ordinal + 1, offsetTable.length * 2);
             offsetTable = Arrays.copyOf(offsetTable, newSize);
             vectorOffsetTable = Arrays.copyOf(vectorOffsetTable, newSize);
+            if (vectorIndex != null) {
+                vectorIndex.ensureCapacity(ordinal, vectorOffsetTable);
+            }
         }
     }
 

@@ -24,6 +24,15 @@
 | **GC Impact** | Severe (Full GC pauses) | **Minimal** |
 | **Persistence** | Not supported | **Supported** |
 | **Transactions** | Not supported | **Atomic multi-key ops** |
+| **AI Memory** | Not supported | **RogueMemory — hybrid vector + keyword search** |
+
+Traditional Java collections and embedded databases focus solely on key-value or relational storage. RogueMap goes further by providing **RogueMemory** — a built-in AI memory layer with hybrid vector similarity search (ANN) and BM25 keyword retrieval, merged via Reciprocal Rank Fusion. All data is persisted through mmap, requiring no external vector database or search engine dependency.
+
+**RogueMemory is ideal for:**
+- **AI Agent long-term memory** — persistent conversation context and user preference recall across sessions
+- **RAG (Retrieval-Augmented Generation)** — embedding-based document/knowledge retrieval for LLM applications
+- **Semantic search** — "find similar" queries over text, code, or any embeddable content
+- **Hybrid retrieval** — combining semantic understanding with exact keyword matching for higher recall accuracy
 
 ## Modules
 

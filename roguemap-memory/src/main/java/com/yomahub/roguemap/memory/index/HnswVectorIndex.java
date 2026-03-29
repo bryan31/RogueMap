@@ -15,7 +15,7 @@ import java.util.concurrent.ConcurrentHashMap;
 public class HnswVectorIndex implements VectorIndex {
 
     private final int dimension;
-    private final long[] vectorFileOffsets;
+    private long[] vectorFileOffsets;
     private final MmapAllocator allocator;
     private HnswIndex<String, float[], MmapVectorItem, Float> hnswIndex;
     private final Set<Integer> deletedOrdinals = Collections.newSetFromMap(new ConcurrentHashMap<>());
@@ -53,6 +53,18 @@ public class HnswVectorIndex implements VectorIndex {
         this.allocator = allocator;
         this.hnswIndex = hnswIndex;
         this.deletedOrdinals.addAll(deletedOrdinals);
+    }
+
+    /**
+     * Ensure internal arrays and HNSW capacity can accommodate the given ordinal.
+     * Called by RogueMemory when tables grow.
+     */
+    public void ensureCapacity(int ordinal, long[] newVectorFileOffsets) {
+        this.vectorFileOffsets = newVectorFileOffsets;
+        int required = ordinal + 1;
+        if (required > hnswIndex.getMaxItemCount()) {
+            hnswIndex.resize(Math.max(required, hnswIndex.getMaxItemCount() * 2));
+        }
     }
 
     public void add(int ordinal, float[] vector) {
