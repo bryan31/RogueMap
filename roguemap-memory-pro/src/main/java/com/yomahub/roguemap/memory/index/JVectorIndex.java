@@ -1,5 +1,7 @@
 package com.yomahub.roguemap.memory.index;
 
+import com.yomahub.roguemap.memory.MmapAllocator;
+import com.yomahub.roguemap.memory.UnsafeOps;
 import io.github.jbellis.jvector.graph.*;
 import io.github.jbellis.jvector.graph.similarity.SearchScoreProvider;
 import io.github.jbellis.jvector.util.Bits;
@@ -16,16 +18,8 @@ import java.util.concurrent.ConcurrentHashMap;
 /**
  * JVectorIndex — jvector-backed HNSW vector index for roguemap-memory-pro.
  *
- * <p>Uses datastax/jvector 3.x GraphIndexBuilder for approximate nearest-neighbor search.
- * Maintains an ordinal→id mapping so jvector node IDs can be translated back to string IDs.
- *
- * <p>Serialization format (compatible with VectorIndex contract):
- * <pre>
- * [generation: 8B long]
- * [deletedCount: 4B int][deletedId_1_len: 2B][deletedId_1 UTF-8]...
- * [entryCount: 4B int]
- * [id_1_len: 2B][id_1 UTF-8][vecLen: 4B int][float * vecLen]...
- * </pre>
+ * <p>Uses datastax/jvector 3.x GraphIndexBuilder with lazy mmap vector reads.
+ * Vectors are stored in mmap and read on-demand via MmapVectorValues.
  */
 public class JVectorIndex implements VectorIndex {
 
@@ -33,81 +27,150 @@ public class JVectorIndex implements VectorIndex {
             VectorizationProvider.getInstance().getVectorTypeSupport();
 
     private final int dimension;
-    // ordinal → id (append-only; ordinal == index in this list)
-    private final List<String> ordinalToId = new ArrayList<>();
-    // ordinal → raw float[] (kept for rebuild after deserialization)
-    private final List<float[]> ordinalToVector = new ArrayList<>();
-    private final Set<String> deletedIds = Collections.newSetFromMap(new ConcurrentHashMap<>());
+    private final long[] vectorOffsets;
+    private final MmapAllocator allocator;
+    private final Map<Integer, String> ordinalToId = new ConcurrentHashMap<>();
+    private final Set<Integer> deletedOrdinals = Collections.newSetFromMap(new ConcurrentHashMap<>());
+    private int nextOrdinal = 0;
+    private OnHeapGraphIndex graph;
+    private boolean graphDirty = true;
 
-    // The built graph index (rebuilt lazily on search after adds)
-    private OnHeapGraphIndex builtIndex;
-    private boolean dirty = false; // true when vectors added since last build
+    static class MmapVectorValues implements RandomAccessVectorValues {
+        private final long[] vectorOffsets;
+        private final MmapAllocator allocator;
+        private final int dimension;
+        private final int size;
+        private final VectorTypeSupport vts = VectorizationProvider.getInstance().getVectorTypeSupport();
 
+        MmapVectorValues(long[] vectorOffsets, MmapAllocator allocator, int dimension, int size) {
+            this.vectorOffsets = vectorOffsets;
+            this.allocator = allocator;
+            this.dimension = dimension;
+            this.size = size;
+        }
+
+        @Override public int size() { return size; }
+        @Override public int dimension() { return dimension; }
+        @Override public VectorFloat<?> getVector(int ordinal) {
+            if (ordinal < 0 || ordinal >= size) {
+                throw new IndexOutOfBoundsException("ordinal " + ordinal + " out of range [0, " + size + ")");
+            }
+            long fileOffset = vectorOffsets[ordinal];
+            if (fileOffset == 0) {
+                throw new IllegalStateException("Vector at ordinal " + ordinal + " not initialized");
+            }
+            long address = allocator.getAddressForOffset(fileOffset);
+            float[] arr = UnsafeOps.getFloatArray(address, dimension);
+            return vts.createFloatVector(arr);
+        }
+        @Override public boolean isValueShared() { return false; }
+        @Override public MmapVectorValues copy() { return this; }
+    }
+
+    @Deprecated
     public JVectorIndex(int dimension, int maxElements) {
         this.dimension = dimension;
+        this.vectorOffsets = null;
+        this.allocator = null;
     }
 
-    /** Private constructor used by load() */
-    private JVectorIndex(int dimension, List<String> ids, List<float[]> vectors,
-                         Set<String> deleted) {
+    public JVectorIndex(int dimension, long[] vectorOffsets, MmapAllocator allocator) {
         this.dimension = dimension;
-        this.ordinalToId.addAll(ids);
-        this.ordinalToVector.addAll(vectors);
-        this.deletedIds.addAll(deleted);
-        this.dirty = true; // need to build index before first search
+        this.vectorOffsets = vectorOffsets;
+        this.allocator = allocator;
     }
 
+    private JVectorIndex(int dimension, long[] vectorOffsets, MmapAllocator allocator,
+                         int nextOrdinal, Map<Integer, String> ordinalToId, Set<Integer> deletedOrdinals) {
+        this.dimension = dimension;
+        this.vectorOffsets = vectorOffsets;
+        this.allocator = allocator;
+        this.nextOrdinal = nextOrdinal;
+        this.ordinalToId.putAll(ordinalToId);
+        this.deletedOrdinals.addAll(deletedOrdinals);
+        this.graphDirty = true;
+    }
+
+    public synchronized void add(int ordinal, float[] vector) {
+        if (vectorOffsets == null || allocator == null) {
+            throw new UnsupportedOperationException("This constructor requires vectorOffsets and allocator");
+        }
+        if (vectorOffsets[ordinal] == 0) {
+            throw new IllegalStateException("Vector at ordinal " + ordinal + " not written to mmap yet");
+        }
+        ordinalToId.put(ordinal, String.valueOf(ordinal));
+        nextOrdinal = Math.max(nextOrdinal, ordinal + 1);
+        graphDirty = true;
+    }
+
+    public void markDeleted(int ordinal) {
+        deletedOrdinals.add(ordinal);
+    }
+
+    @Deprecated
     @Override
     public synchronized void add(String id, float[] vector) {
-        ordinalToId.add(id);
-        ordinalToVector.add(vector.clone());
-        dirty = true;
-        builtIndex = null;
+        ordinalToId.put(nextOrdinal, id);
+        nextOrdinal++;
+        graphDirty = true;
     }
 
+    @Deprecated
     @Override
     public void markDeleted(String id) {
-        deletedIds.add(id);
+        for (Map.Entry<Integer, String> e : ordinalToId.entrySet()) {
+            if (e.getValue().equals(id)) {
+                deletedOrdinals.add(e.getKey());
+                break;
+            }
+        }
     }
 
-    @Override
-    public synchronized List<ScoredId> search(float[] queryVector, int topK) {
-        if (ordinalToId.isEmpty()) return Collections.emptyList();
+    public synchronized List<ScoredOrdinal> searchByOrdinal(float[] queryVector, int topK) {
+        if (nextOrdinal == 0) return Collections.emptyList();
 
-        // Rebuild graph if dirty
-        if (dirty || builtIndex == null) {
-            builtIndex = buildGraph();
-            dirty = false;
+        if (graphDirty || graph == null) {
+            buildGraph();
         }
 
-        // Build a Bits mask that excludes deleted nodes
-        Set<Integer> deletedOrdinals = new HashSet<>();
-        for (int i = 0; i < ordinalToId.size(); i++) {
-            if (deletedIds.contains(ordinalToId.get(i))) {
-                deletedOrdinals.add(i);
-            }
-        }
+        MmapVectorValues vectorValues = new MmapVectorValues(vectorOffsets, allocator, dimension, nextOrdinal);
         Bits acceptBits = deletedOrdinals.isEmpty() ? Bits.ALL : (node -> !deletedOrdinals.contains(node));
 
-        // Build RAVV for the query
-        List<VectorFloat<?>> vfList = toVectorFloatList(ordinalToVector);
-        ListRandomAccessVectorValues ravv = new ListRandomAccessVectorValues(vfList, dimension);
-
         VectorFloat<?> qvf = toVectorFloat(queryVector);
-        SearchScoreProvider ssp = SearchScoreProvider.exact(qvf, VectorSimilarityFunction.COSINE, ravv);
-
-        int k = Math.min(topK, ordinalToId.size() - deletedOrdinals.size());
+        int k = Math.min(topK, nextOrdinal - deletedOrdinals.size());
         if (k <= 0) return Collections.emptyList();
 
-        SearchResult result = GraphSearcher.search(qvf, k, ravv, VectorSimilarityFunction.COSINE,
-                builtIndex, acceptBits);
+        SearchResult result = GraphSearcher.search(qvf, k, vectorValues, VectorSimilarityFunction.COSINE,
+                graph, acceptBits);
 
-        List<ScoredId> out = new ArrayList<>();
+        List<ScoredOrdinal> out = new ArrayList<>();
         for (SearchResult.NodeScore ns : result.getNodes()) {
-            String id = ordinalToId.get(ns.node);
-            if (!deletedIds.contains(id)) {
-                out.add(new ScoredId(id, ns.score));
+            if (!deletedOrdinals.contains(ns.node)) {
+                out.add(new ScoredOrdinal(ns.node, ns.score));
             }
+        }
+        return out;
+    }
+
+    private void buildGraph() {
+        MmapVectorValues vectorValues = new MmapVectorValues(vectorOffsets, allocator, dimension, nextOrdinal);
+        GraphIndexBuilder builder = new GraphIndexBuilder(
+                vectorValues,
+                VectorSimilarityFunction.COSINE,
+                16, 100, 1.2f, 1.4f
+        );
+        graph = builder.build(vectorValues);
+        graphDirty = false;
+    }
+
+    @Deprecated
+    @Override
+    public synchronized List<ScoredId> search(float[] queryVector, int topK) {
+        List<ScoredOrdinal> ordResults = searchByOrdinal(queryVector, topK);
+        List<ScoredId> out = new ArrayList<>();
+        for (ScoredOrdinal so : ordResults) {
+            String id = ordinalToId.get(so.ordinal);
+            if (id != null) out.add(new ScoredId(id, so.score));
         }
         return out;
     }
@@ -115,79 +178,50 @@ public class JVectorIndex implements VectorIndex {
     @Override
     public synchronized void serialize(OutputStream out) throws IOException {
         DataOutputStream dos = new DataOutputStream(out);
-        dos.writeLong(0L); // generation placeholder
-        dos.writeInt(deletedIds.size());
-        for (String id : deletedIds) {
-            byte[] b = id.getBytes(StandardCharsets.UTF_8);
+        dos.writeInt(dimension);
+        dos.writeInt(nextOrdinal);
+        dos.writeInt(ordinalToId.size());
+        for (Map.Entry<Integer, String> e : ordinalToId.entrySet()) {
+            dos.writeInt(e.getKey());
+            byte[] b = e.getValue().getBytes(StandardCharsets.UTF_8);
             dos.writeShort(b.length);
             dos.write(b);
         }
-        dos.writeInt(ordinalToId.size());
-        for (int i = 0; i < ordinalToId.size(); i++) {
-            byte[] idBytes = ordinalToId.get(i).getBytes(StandardCharsets.UTF_8);
-            dos.writeShort(idBytes.length);
-            dos.write(idBytes);
-            float[] v = ordinalToVector.get(i);
-            dos.writeInt(v.length);
-            for (float f : v) dos.writeFloat(f);
+        dos.writeInt(deletedOrdinals.size());
+        for (int ord : deletedOrdinals) {
+            dos.writeInt(ord);
         }
         dos.flush();
     }
 
-    public static JVectorIndex load(InputStream in, int dimension) throws IOException {
+    public static JVectorIndex deserialize(InputStream in, long[] vectorOffsets, MmapAllocator allocator) throws IOException {
         DataInputStream dis = new DataInputStream(in);
-        dis.readLong(); // skip generation
-        int deletedCount = dis.readInt();
-        Set<String> deletedSet = Collections.newSetFromMap(new ConcurrentHashMap<>());
-        for (int i = 0; i < deletedCount; i++) {
+        int dimension = dis.readInt();
+        int nextOrd = dis.readInt();
+        int mapSize = dis.readInt();
+        Map<Integer, String> ordToId = new ConcurrentHashMap<>();
+        for (int i = 0; i < mapSize; i++) {
+            int ord = dis.readInt();
             int len = dis.readShort() & 0xFFFF;
             byte[] b = new byte[len];
             dis.readFully(b);
-            deletedSet.add(new String(b, StandardCharsets.UTF_8));
+            ordToId.put(ord, new String(b, StandardCharsets.UTF_8));
         }
-        int count = dis.readInt();
-        List<String> ids = new ArrayList<>(count);
-        List<float[]> vectors = new ArrayList<>(count);
-        for (int i = 0; i < count; i++) {
-            int idLen = dis.readShort() & 0xFFFF;
-            byte[] idBytes = new byte[idLen];
-            dis.readFully(idBytes);
-            ids.add(new String(idBytes, StandardCharsets.UTF_8));
-            int vecLen = dis.readInt();
-            float[] v = new float[vecLen];
-            for (int j = 0; j < vecLen; j++) v[j] = dis.readFloat();
-            vectors.add(v);
+        int delSize = dis.readInt();
+        Set<Integer> deleted = Collections.newSetFromMap(new ConcurrentHashMap<>());
+        for (int i = 0; i < delSize; i++) {
+            deleted.add(dis.readInt());
         }
-        return new JVectorIndex(dimension, ids, vectors, deletedSet);
+        return new JVectorIndex(dimension, vectorOffsets, allocator, nextOrd, ordToId, deleted);
+    }
+
+    @Deprecated
+    public static JVectorIndex load(InputStream in, int dimension) throws IOException {
+        return deserialize(in, null, null);
     }
 
     @Override
     public void close() {}
-
-    // ===== Private helpers =====
-
-    private OnHeapGraphIndex buildGraph() {
-        if (ordinalToVector.isEmpty()) return null;
-        List<VectorFloat<?>> vfList = toVectorFloatList(ordinalToVector);
-        ListRandomAccessVectorValues ravv = new ListRandomAccessVectorValues(vfList, dimension);
-        GraphIndexBuilder builder = new GraphIndexBuilder(
-                ravv,
-                VectorSimilarityFunction.COSINE,
-                16,    // M
-                100,   // efConstruction
-                1.2f,  // alpha
-                1.4f   // neighborOverflow
-        );
-        return builder.build(ravv);
-    }
-
-    private List<VectorFloat<?>> toVectorFloatList(List<float[]> floatArrays) {
-        List<VectorFloat<?>> list = new ArrayList<>(floatArrays.size());
-        for (float[] arr : floatArrays) {
-            list.add(toVectorFloat(arr));
-        }
-        return list;
-    }
 
     private VectorFloat<?> toVectorFloat(float[] arr) {
         return VECTOR_SUPPORT.createFloatVector(arr);
