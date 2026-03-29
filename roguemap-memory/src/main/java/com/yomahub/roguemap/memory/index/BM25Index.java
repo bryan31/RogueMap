@@ -118,7 +118,7 @@ public class BM25Index {
 
                 int df = 0;
                 for (int i = 0; i < arr.length; i += 2) {
-                    if (arr[i] > 0) df++;
+                    if (arr[i] >= 0) df++;
                 }
                 if (df == 0) continue;
 
