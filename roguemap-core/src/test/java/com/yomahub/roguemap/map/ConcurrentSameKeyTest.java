@@ -75,6 +75,7 @@ public class ConcurrentSameKeyTest {
                 .keyCodec(PrimitiveCodecs.LONG)
                 .valueCodec(KryoObjectCodec.create(TestValueObject.class))
                 .primitiveIndex()
+                .autoExpand(true)
                 .build()) {
 
             final int threads = 200;

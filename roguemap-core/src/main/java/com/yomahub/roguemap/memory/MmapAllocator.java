@@ -133,6 +133,7 @@ public class MmapAllocator implements Allocator {
             this.raf = new RandomAccessFile(file, "rw");
             this.channel = raf.getChannel();
 
+            long effectiveSize = fileSize;
             if (!fileExists) {
                 // 新文件：预分配空间
                 raf.setLength(fileSize);
@@ -142,11 +143,15 @@ public class MmapAllocator implements Allocator {
                 if (existingSize < fileSize) {
                     // 只在需要时扩展
                     raf.setLength(fileSize);
+                } else if (existingSize > fileSize) {
+                    // 文件因 autoExpand 比配置值大，映射实际大小以避免 SIGSEGV
+                    effectiveSize = existingSize;
                 }
             }
 
+            this.fileSize = effectiveSize;
             // 创建初始内存映射分段
-            mapFileRegion(0, fileSize);
+            mapFileRegion(0, effectiveSize);
 
             // 如果是临时文件，注册清理钩子
             if (isTemporary) {

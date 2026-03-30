@@ -38,7 +38,7 @@ import java.util.concurrent.TimeUnit;
 public class RogueMemory implements AutoCloseable {
 
     // ===== 默认配置 =====
-    private static final long DEFAULT_FILE_SIZE = 64L * 1024 * 1024; // 64MB
+    private static final long DEFAULT_FILE_SIZE = 256L * 1024 * 1024; // 256MB
     private static final int HNSW_MAX_ELEMENTS = 100_000;
 
     // ===== 内部状态 =====
@@ -215,7 +215,11 @@ public class RogueMemory implements AutoCloseable {
         if (closed) return;
         closed = true;
         if (autoCheckpointManager != null) autoCheckpointManager.stop();
-        saveIndexes();
+        try {
+            saveIndexes();
+        } catch (OutOfMemoryError | Exception e) {
+            // Best effort: 当 maxFileSize 达到上限时，saveIndexes 可能因空间不足而失败
+        }
         allocator.close();
         if (vectorIndex != null) vectorIndex.close();
     }
@@ -365,6 +369,9 @@ public class RogueMemory implements AutoCloseable {
         private EmbeddingProvider embeddingProvider;
         private SearchMode searchMode = SearchMode.HYBRID;
         private long fileSize = DEFAULT_FILE_SIZE;
+        private boolean autoExpand = false;
+        private double expandFactor = 2.0;
+        private long maxFileSize = 0L;
         private long autoCheckpointInterval = -1;
         private int autoCheckpointOperations = -1;
 
@@ -385,6 +392,41 @@ public class RogueMemory implements AutoCloseable {
 
         public MmapBuilder allocateSize(long size) {
             this.fileSize = size;
+            return this;
+        }
+
+        /**
+         * 启用或禁用自动扩容。当文件空间不足时，自动按 {@link #expandFactor(double)} 倍数增长文件大小。
+         *
+         * @param autoExpand true 启用自动扩容
+         * @return this
+         */
+        public MmapBuilder autoExpand(boolean autoExpand) {
+            this.autoExpand = autoExpand;
+            return this;
+        }
+
+        /**
+         * 设置自动扩容时的增长倍数，默认 2.0。仅当 {@link #autoExpand(boolean)} 为 true 时生效。
+         *
+         * @param factor 增长倍数，最小 1.1
+         * @return this
+         */
+        public MmapBuilder expandFactor(double factor) {
+            if (factor < 1.1) throw new IllegalArgumentException("expandFactor must be >= 1.1");
+            this.expandFactor = factor;
+            return this;
+        }
+
+        /**
+         * 设置自动扩容时的文件大小上限。仅当 {@link #autoExpand(boolean)} 为 true 时生效。
+         *
+         * @param maxFileSize 最大文件大小（字节），0 表示无上限
+         * @return this
+         */
+        public MmapBuilder maxFileSize(long maxFileSize) {
+            if (maxFileSize < 0) throw new IllegalArgumentException("maxFileSize must be >= 0");
+            this.maxFileSize = maxFileSize;
             return this;
         }
 
@@ -422,7 +464,7 @@ public class RogueMemory implements AutoCloseable {
             String memPath = path + ".mem";
             String hnswPath = path + ".hnsw";
 
-            MmapAllocator allocator = new MmapAllocator(memPath, fileSize, false);
+            MmapAllocator allocator = new MmapAllocator(memPath, fileSize, false, autoExpand, expandFactor, maxFileSize);
             long baseAddr = allocator.getBaseAddress();
 
             OrdinalRegistry ordinalRegistry = new OrdinalRegistry();
@@ -435,9 +477,8 @@ public class RogueMemory implements AutoCloseable {
             if (isExisting) {
                 MmapFileHeader header = allocator.readHeader();
                 allocator.restoreOffset(header.getCurrentOffset());
-                MmapFileHeader.markOpen(baseAddr);
-
                 int dirtyFlag = MmapFileHeader.getDirtyFlag(baseAddr);
+                MmapFileHeader.markOpen(baseAddr);
                 if (dirtyFlag == 1) {
                     // Dirty: full scan to rebuild
                     RebuildResult result = rebuildFromScan(allocator, embeddingProvider, searchMode);
@@ -606,6 +647,9 @@ public class RogueMemory implements AutoCloseable {
                 + 4 + metaBytes.length + 4 + vectorLen * 4 + 1 + 8;
 
         long addr = alloc.allocate(size);
+        if (addr == 0) {
+            throw new OutOfMemoryError("分配 " + size + " 字节失败");
+        }
         long pos = addr;
         UnsafeOps.putLong(pos, expireTime); pos += 8;
         UUID uuid = UUID.fromString(id);
@@ -847,6 +891,7 @@ public class RogueMemory implements AutoCloseable {
             byte[] regData = ordinalRegistry.serialize();
             int regSize = regData.length;
             long regAddr = allocator.allocate(4 + regSize);
+            if (regAddr == 0) throw new OutOfMemoryError("无法分配 " + (4 + regSize) + " 字节保存 OrdinalRegistry");
             UnsafeOps.putInt(regAddr, regSize);
             UnsafeOps.copyFromArray(regData, 0, regAddr + 4, regSize);
             ordinalRegistryOffset = allocator.getFileOffsetForAddress(regAddr);
@@ -860,6 +905,7 @@ public class RogueMemory implements AutoCloseable {
             byte[] bm25Data = bm25Index.serialize();
             int bm25Size = bm25Data.length;
             long bm25Addr = allocator.allocate(4 + bm25Size);
+            if (bm25Addr == 0) throw new OutOfMemoryError("无法分配 " + (4 + bm25Size) + " 字节保存 BM25Index");
             UnsafeOps.putInt(bm25Addr, bm25Size);
             UnsafeOps.copyFromArray(bm25Data, 0, bm25Addr + 4, bm25Size);
             bm25FileOffset = allocator.getFileOffsetForAddress(bm25Addr);
