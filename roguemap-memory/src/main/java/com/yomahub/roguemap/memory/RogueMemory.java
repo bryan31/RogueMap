@@ -499,6 +499,9 @@ public class RogueMemory implements AutoCloseable {
                     vectorOffsetTable = result.vectorOffsetTable;
 
                     bm25 = loadBm25(allocator, baseAddr);
+                    if (searchMode != SearchMode.KEYWORD_ONLY && embeddingProvider != null) {
+                        ensureDimension(embeddingProvider);
+                    }
                     hnsw = loadHnsw(allocator, baseAddr, hnswPath, embeddingProvider, searchMode, vectorOffsetTable);
 
                     if (hnsw == null && searchMode != SearchMode.KEYWORD_ONLY) {
