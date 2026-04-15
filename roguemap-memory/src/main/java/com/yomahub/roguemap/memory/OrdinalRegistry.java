@@ -117,19 +117,23 @@ public class OrdinalRegistry {
         OrdinalRegistry reg = new OrdinalRegistry();
         DataInputStream dis = new DataInputStream(new ByteArrayInputStream(data));
         int count = dis.readInt();
+        // Legacy format: [count:4B]([ordinal:4B][msb:8B][lsb:8B])* => total = 4 + count * 20 bytes
+        // New format:    [count:4B]([ordinal:4B][id_len:2B][id UTF-8 bytes])* => variable length
+        boolean legacyFormat = (data.length == 4 + count * 20);
         int maxOrdinal = -1;
         for (int i = 0; i < count; i++) {
             int ordinal = dis.readInt();
-            // Detect format: new format has id_len (short) as next 2 bytes;
-            // old format has MSB (long, 8 bytes). We distinguish by peeking:
-            // In the new format the next 2 bytes encode a length (≤ 512 reasonable).
-            // In the old format the next 2 bytes are the high 2 bytes of a long UUID MSB.
-            // We use a versioned approach: try to read as new format (short + bytes).
-            // Since we control serialization going forward, just read new format.
-            int idLen = dis.readShort() & 0xFFFF;
-            byte[] idBytes = new byte[idLen];
-            dis.readFully(idBytes);
-            String id = new String(idBytes, java.nio.charset.StandardCharsets.UTF_8);
+            String id;
+            if (legacyFormat) {
+                long msb = dis.readLong();
+                long lsb = dis.readLong();
+                id = new UUID(msb, lsb).toString();
+            } else {
+                int idLen = dis.readShort() & 0xFFFF;
+                byte[] idBytes = new byte[idLen];
+                dis.readFully(idBytes);
+                id = new String(idBytes, java.nio.charset.StandardCharsets.UTF_8);
+            }
             if (ordinal >= reg.idTable.length) {
                 reg.idTable = Arrays.copyOf(reg.idTable, Math.max(ordinal + 1, reg.idTable.length * 2));
             }
