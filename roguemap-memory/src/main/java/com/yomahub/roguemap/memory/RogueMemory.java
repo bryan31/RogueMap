@@ -137,8 +137,9 @@ public class RogueMemory implements AutoCloseable {
 
     public boolean exists(String id, String namespace) {
         checkOpen();
-        if (!exists(id)) return false;
         int ordinal = ordinalRegistry.getOrdinal(id);
+        if (ordinal == -1) return false;
+        if (ordinal >= offsetTable.length || offsetTable[ordinal] == 0) return false;
         MemoryEntry entry = readRecord(offsetTable[ordinal]);
         return entry != null && namespace.equals(entry.getNamespace());
     }
