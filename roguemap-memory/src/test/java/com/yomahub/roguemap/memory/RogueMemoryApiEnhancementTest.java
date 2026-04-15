@@ -121,6 +121,28 @@ class RogueMemoryApiEnhancementTest {
         assertEquals("value", entry.getMetadata().get("key"));
     }
 
+    // ===== deleteByNamespace =====
+
+    @Test
+    void deleteByNamespaceRemovesAllInNamespace() {
+        String id1 = memory.add("内容1", Collections.emptyMap(), "del-ns");
+        String id2 = memory.add("内容2", Collections.emptyMap(), "del-ns");
+        String id3 = memory.add("内容3", Collections.emptyMap(), "other-ns");
+
+        memory.deleteByNamespace("del-ns");
+
+        assertNull(memory.get(id1));
+        assertNull(memory.get(id2));
+        assertNotNull(memory.get(id3));
+    }
+
+    @Test
+    void deleteByNamespaceOnEmptyNamespaceIsNoOp() {
+        String id = memory.add("内容", Collections.emptyMap(), "keep-ns");
+        memory.deleteByNamespace("nonexistent-ns");
+        assertNotNull(memory.get(id));
+    }
+
     // ===== helper =====
 
     private static void deleteDir(File dir) {

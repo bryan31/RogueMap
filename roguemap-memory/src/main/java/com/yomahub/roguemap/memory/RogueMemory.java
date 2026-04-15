@@ -173,6 +173,24 @@ public class RogueMemory implements AutoCloseable {
         delete(id);
     }
 
+    public void deleteByNamespace(String namespace) {
+        checkOpen();
+        int cap = ordinalRegistry.capacity();
+        List<String> toDelete = new ArrayList<>();
+        for (int i = 0; i < cap; i++) {
+            if (i >= offsetTable.length || offsetTable[i] == 0) continue;
+            String id = ordinalRegistry.getId(i);
+            if (id == null) continue;
+            MemoryEntry entry = readRecord(offsetTable[i]);
+            if (entry != null && namespace.equals(entry.getNamespace())) {
+                toDelete.add(id);
+            }
+        }
+        for (String id : toDelete) {
+            delete(id);
+        }
+    }
+
     public void update(String id, String newContent) {
         checkOpen();
         int ordinal = ordinalRegistry.getOrdinal(id);
