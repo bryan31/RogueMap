@@ -86,6 +86,41 @@ class RogueMemoryApiEnhancementTest {
         assertDoesNotThrow(() -> memory.delete("nonexistent", "any-ns"));
     }
 
+    // ===== update(id, namespace, newContent) =====
+
+    @Test
+    void updateWithMatchingNamespaceUpdatesContent() {
+        String id = memory.add("原始内容", Collections.emptyMap(), "update-ns");
+        memory.update(id, "update-ns", "新内容");
+        MemoryEntry entry = memory.get(id);
+        assertNotNull(entry);
+        assertEquals("新内容", entry.getContent());
+        assertEquals("update-ns", entry.getNamespace());
+    }
+
+    @Test
+    void updateWithMismatchedNamespaceIgnores() {
+        String id = memory.add("原始内容", Collections.emptyMap(), "update-ns");
+        memory.update(id, "wrong-ns", "新内容");
+        MemoryEntry entry = memory.get(id);
+        assertNotNull(entry);
+        assertEquals("原始内容", entry.getContent());
+    }
+
+    @Test
+    void updateWithNamespaceOnUnknownIdIsNoOp() {
+        assertDoesNotThrow(() -> memory.update("nonexistent", "any-ns", "新内容"));
+    }
+
+    @Test
+    void updateWithNamespacePreservesMetadata() {
+        Map<String, String> meta = Collections.singletonMap("key", "value");
+        String id = memory.add("原始内容", meta, "meta-ns");
+        memory.update(id, "meta-ns", "更新内容");
+        MemoryEntry entry = memory.get(id);
+        assertEquals("value", entry.getMetadata().get("key"));
+    }
+
     // ===== helper =====
 
     private static void deleteDir(File dir) {

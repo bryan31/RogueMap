@@ -206,6 +206,16 @@ public class RogueMemory implements AutoCloseable {
         if (autoCheckpointManager != null) autoCheckpointManager.onWriteOperation();
     }
 
+    public void update(String id, String namespace, String newContent) {
+        checkOpen();
+        int ordinal = ordinalRegistry.getOrdinal(id);
+        if (ordinal == -1) return;
+        if (ordinal >= offsetTable.length || offsetTable[ordinal] == 0) return;
+        MemoryEntry entry = readRecord(offsetTable[ordinal]);
+        if (entry == null || !namespace.equals(entry.getNamespace())) return;
+        update(id, newContent);
+    }
+
     public List<MemoryResult> search(String query, int topK) {
         return search(query, topK, SearchOptions.builder().build());
     }
