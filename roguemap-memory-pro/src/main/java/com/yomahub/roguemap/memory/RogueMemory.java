@@ -128,6 +128,22 @@ public class RogueMemory implements AutoCloseable {
         return readRecord(offsetTable[ordinal]);
     }
 
+    public boolean exists(String id) {
+        checkOpen();
+        int ordinal = ordinalRegistry.getOrdinal(id);
+        if (ordinal == -1) return false;
+        return ordinal < offsetTable.length && offsetTable[ordinal] != 0;
+    }
+
+    public boolean exists(String id, String namespace) {
+        checkOpen();
+        int ordinal = ordinalRegistry.getOrdinal(id);
+        if (ordinal == -1) return false;
+        if (ordinal >= offsetTable.length || offsetTable[ordinal] == 0) return false;
+        MemoryEntry entry = readRecord(offsetTable[ordinal]);
+        return entry != null && namespace.equals(entry.getNamespace());
+    }
+
     public void delete(String id) {
         checkOpen();
         int ordinal = ordinalRegistry.getOrdinal(id);
@@ -145,6 +161,34 @@ public class RogueMemory implements AutoCloseable {
         offsetTable[ordinal] = 0;
         if (ordinal < vectorOffsetTable.length) vectorOffsetTable[ordinal] = 0;
         if (autoCheckpointManager != null) autoCheckpointManager.onWriteOperation();
+    }
+
+    public void delete(String id, String namespace) {
+        checkOpen();
+        int ordinal = ordinalRegistry.getOrdinal(id);
+        if (ordinal == -1) return;
+        if (ordinal >= offsetTable.length || offsetTable[ordinal] == 0) return;
+        MemoryEntry entry = readRecord(offsetTable[ordinal]);
+        if (entry == null || !namespace.equals(entry.getNamespace())) return;
+        delete(id);
+    }
+
+    public void deleteByNamespace(String namespace) {
+        checkOpen();
+        int cap = ordinalRegistry.capacity();
+        List<String> toDelete = new ArrayList<>();
+        for (int i = 0; i < cap; i++) {
+            if (i >= offsetTable.length || offsetTable[i] == 0) continue;
+            String id = ordinalRegistry.getId(i);
+            if (id == null) continue;
+            MemoryEntry entry = readRecord(offsetTable[i]);
+            if (entry != null && namespace.equals(entry.getNamespace())) {
+                toDelete.add(id);
+            }
+        }
+        for (String id : toDelete) {
+            delete(id);
+        }
     }
 
     public void update(String id, String newContent) {
@@ -178,6 +222,16 @@ public class RogueMemory implements AutoCloseable {
             vectorIndex.add(ordinal, vector);
         }
         if (autoCheckpointManager != null) autoCheckpointManager.onWriteOperation();
+    }
+
+    public void update(String id, String namespace, String newContent) {
+        checkOpen();
+        int ordinal = ordinalRegistry.getOrdinal(id);
+        if (ordinal == -1) return;
+        if (ordinal >= offsetTable.length || offsetTable[ordinal] == 0) return;
+        MemoryEntry entry = readRecord(offsetTable[ordinal]);
+        if (entry == null || !namespace.equals(entry.getNamespace())) return;
+        update(id, newContent);
     }
 
     public List<MemoryResult> search(String query, int topK) {
