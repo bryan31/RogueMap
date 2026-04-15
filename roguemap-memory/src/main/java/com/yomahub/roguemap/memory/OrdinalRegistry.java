@@ -90,20 +90,20 @@ public class OrdinalRegistry {
         try { return nextOrdinal; } finally { lock.readLock().unlock(); }
     }
 
-    /** 序列化为字节数组，仅写入活跃条目。格式：[count:4B]([ordinal:4B][id_len:2B][id UTF-8 bytes])* */
+    /** 序列化为字节数组，仅写入活跃条目 */
     public byte[] serialize() throws IOException {
         lock.readLock().lock();
         try {
             int count = idToOrdinal.size();
-            ByteArrayOutputStream baos = new ByteArrayOutputStream(4 + count * 40);
+            ByteArrayOutputStream baos = new ByteArrayOutputStream(4 + count * 20);
             DataOutputStream dos = new DataOutputStream(baos);
             dos.writeInt(count);
             for (int i = 0; i < nextOrdinal; i++) {
                 if (idTable[i] == null) continue;
                 dos.writeInt(i);
-                byte[] idBytes = idTable[i].getBytes(java.nio.charset.StandardCharsets.UTF_8);
-                dos.writeShort(idBytes.length);
-                dos.write(idBytes);
+                UUID uuid = UUID.fromString(idTable[i]);
+                dos.writeLong(uuid.getMostSignificantBits());
+                dos.writeLong(uuid.getLeastSignificantBits());
             }
             dos.flush();
             return baos.toByteArray();
@@ -112,33 +112,22 @@ public class OrdinalRegistry {
         }
     }
 
-    /** 从字节数组反序列化。兼容旧格式（每条目固定16字节UUID）和新格式（变长字符串）。 */
+    /** 从字节数组反序列化 */
     public static OrdinalRegistry deserialize(byte[] data) throws IOException {
         OrdinalRegistry reg = new OrdinalRegistry();
         DataInputStream dis = new DataInputStream(new ByteArrayInputStream(data));
         int count = dis.readInt();
-        // Legacy format: [count:4B]([ordinal:4B][msb:8B][lsb:8B])* => total = 4 + count * 20 bytes
-        // New format:    [count:4B]([ordinal:4B][id_len:2B][id UTF-8 bytes])* => variable length
-        boolean legacyFormat = (data.length == 4 + count * 20);
         int maxOrdinal = -1;
         for (int i = 0; i < count; i++) {
             int ordinal = dis.readInt();
-            String id;
-            if (legacyFormat) {
-                long msb = dis.readLong();
-                long lsb = dis.readLong();
-                id = new UUID(msb, lsb).toString();
-            } else {
-                int idLen = dis.readShort() & 0xFFFF;
-                byte[] idBytes = new byte[idLen];
-                dis.readFully(idBytes);
-                id = new String(idBytes, java.nio.charset.StandardCharsets.UTF_8);
-            }
+            long msb = dis.readLong();
+            long lsb = dis.readLong();
+            String uuid = new UUID(msb, lsb).toString();
             if (ordinal >= reg.idTable.length) {
                 reg.idTable = Arrays.copyOf(reg.idTable, Math.max(ordinal + 1, reg.idTable.length * 2));
             }
-            reg.idTable[ordinal] = id;
-            reg.idToOrdinal.put(id, ordinal);
+            reg.idTable[ordinal] = uuid;
+            reg.idToOrdinal.put(uuid, ordinal);
             if (ordinal > maxOrdinal) maxOrdinal = ordinal;
         }
         reg.nextOrdinal = maxOrdinal + 1;

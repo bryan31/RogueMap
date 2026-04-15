@@ -63,39 +63,6 @@ class RogueMemoryApiEnhancementTest {
         assertFalse(memory.exists("nonexistent-id", "ns1"));
     }
 
-    // ===== add with external id =====
-
-    @Test
-    void addWithExternalIdStoresEntry() {
-        String customId = "my-custom-id-001";
-        String returned = memory.add(customId, "外部指定id的内容",
-            Collections.singletonMap("source", "llm"), "agent-ns");
-        assertEquals(customId, returned);
-
-        MemoryEntry entry = memory.get(customId);
-        assertNotNull(entry);
-        assertEquals("外部指定id的内容", entry.getContent());
-        assertEquals("agent-ns", entry.getNamespace());
-        assertEquals("llm", entry.getMetadata().get("source"));
-    }
-
-    @Test
-    void addWithDuplicateIdThrowsIllegalArgumentException() {
-        String customId = "dup-id-001";
-        memory.add(customId, "第一次", Collections.emptyMap(), "ns1");
-        assertThrows(IllegalArgumentException.class, () ->
-            memory.add(customId, "第二次", Collections.emptyMap(), "ns1"));
-    }
-
-    @Test
-    void addWithExternalIdIsSearchable() {
-        String customId = "search-id-001";
-        memory.add(customId, "人工智能记忆", Collections.emptyMap(), "ns1");
-        List<MemoryResult> results = memory.search("人工智能", 5);
-        assertFalse(results.isEmpty());
-        assertEquals(customId, results.get(0).getId());
-    }
-
     // ===== helper =====
 
     private static void deleteDir(File dir) {

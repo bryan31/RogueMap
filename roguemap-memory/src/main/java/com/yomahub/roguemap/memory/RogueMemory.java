@@ -120,49 +120,12 @@ public class RogueMemory implements AutoCloseable {
         return id;
     }
 
-    public String add(String id, String content, Map<String, String> metadata, String namespace) {
-        checkOpen();
-        if (id == null || id.isEmpty()) throw new IllegalArgumentException("id must not be null or empty");
-        if (ordinalRegistry.getOrdinal(id) != -1) {
-            throw new IllegalArgumentException("id already exists: " + id);
-        }
-        int ordinal = ordinalRegistry.register(id);
-        growTablesIfNeeded(ordinal);
-
-        long createdAt = System.currentTimeMillis();
-        float[] vector = null;
-        if (searchMode != SearchMode.KEYWORD_ONLY && embeddingProvider != null) {
-            vector = embeddingProvider.embed(content);
-        }
-
-        long recordOffset = writeRecordToAllocator(allocator, id, content, metadata, namespace,
-                createdAt, 0L, vector, false);
-        offsetTable[ordinal] = allocator.getFileOffsetForAddress(recordOffset);
-
-        if (vector != null) {
-            vectorOffsetTable[ordinal] = computeVectorOffset(recordOffset, namespace, content, metadata);
-        }
-
-        bm25Index.addDocument(ordinal, content);
-        if (vectorIndex != null && vector != null) {
-            vectorIndex.add(ordinal, vector);
-        }
-        if (autoCheckpointManager != null) autoCheckpointManager.onWriteOperation();
-        return id;
-    }
-
     public MemoryEntry get(String id) {
         checkOpen();
         int ordinal = ordinalRegistry.getOrdinal(id);
         if (ordinal == -1) return null;
         if (ordinal >= offsetTable.length || offsetTable[ordinal] == 0) return null;
-        MemoryEntry entry = readRecord(offsetTable[ordinal]);
-        if (entry != null && !id.equals(entry.getId())) {
-            // id stored in mmap may be a hashed UUID for non-UUID external ids; restore the real id
-            entry = new MemoryEntry(id, entry.getContent(), entry.getMetadata(),
-                    entry.getNamespace(), entry.getCreatedAt(), entry.getExpireTime(), entry.getVector());
-        }
-        return entry;
+        return readRecord(offsetTable[ordinal]);
     }
 
     public boolean exists(String id) {
@@ -708,12 +671,7 @@ public class RogueMemory implements AutoCloseable {
         }
         long pos = addr;
         UnsafeOps.putLong(pos, expireTime); pos += 8;
-        UUID uuid;
-        try {
-            uuid = UUID.fromString(id);
-        } catch (IllegalArgumentException e) {
-            uuid = UUID.nameUUIDFromBytes(id.getBytes(StandardCharsets.UTF_8));
-        }
+        UUID uuid = UUID.fromString(id);
         UnsafeOps.putLong(pos, uuid.getMostSignificantBits()); pos += 8;
         UnsafeOps.putLong(pos, uuid.getLeastSignificantBits()); pos += 8;
         UnsafeOps.putShort(pos, (short) nsBytes.length); pos += 2;
