@@ -128,6 +128,21 @@ public class RogueMemory implements AutoCloseable {
         return readRecord(offsetTable[ordinal]);
     }
 
+    public boolean exists(String id) {
+        checkOpen();
+        int ordinal = ordinalRegistry.getOrdinal(id);
+        if (ordinal == -1) return false;
+        return ordinal < offsetTable.length && offsetTable[ordinal] != 0;
+    }
+
+    public boolean exists(String id, String namespace) {
+        checkOpen();
+        if (!exists(id)) return false;
+        int ordinal = ordinalRegistry.getOrdinal(id);
+        MemoryEntry entry = readRecord(offsetTable[ordinal]);
+        return entry != null && namespace.equals(entry.getNamespace());
+    }
+
     public void delete(String id) {
         checkOpen();
         int ordinal = ordinalRegistry.getOrdinal(id);
