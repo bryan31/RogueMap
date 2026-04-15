@@ -63,6 +63,29 @@ class RogueMemoryApiEnhancementTest {
         assertFalse(memory.exists("nonexistent-id", "ns1"));
     }
 
+    // ===== delete(id, namespace) =====
+
+    @Test
+    void deleteWithMatchingNamespaceRemovesEntry() {
+        String id = memory.add("待删除", Collections.emptyMap(), "target-ns");
+        memory.delete(id, "target-ns");
+        assertNull(memory.get(id));
+        assertFalse(memory.exists(id));
+    }
+
+    @Test
+    void deleteWithMismatchedNamespaceIgnores() {
+        String id = memory.add("不应被删除", Collections.emptyMap(), "target-ns");
+        memory.delete(id, "wrong-ns");
+        assertNotNull(memory.get(id));
+        assertTrue(memory.exists(id));
+    }
+
+    @Test
+    void deleteWithNamespaceOnUnknownIdIsNoOp() {
+        assertDoesNotThrow(() -> memory.delete("nonexistent", "any-ns"));
+    }
+
     // ===== helper =====
 
     private static void deleteDir(File dir) {
