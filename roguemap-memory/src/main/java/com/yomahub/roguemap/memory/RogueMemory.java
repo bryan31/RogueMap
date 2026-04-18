@@ -1071,7 +1071,7 @@ public class RogueMemory implements AutoCloseable {
     private List<MemoryResult> applyFilters(List<MemoryResult> results, SearchOptions options) {
         if (options == null) return results;
         String ns = options.getNamespace();
-        Map<String, String> filters = options.getFilters();
+        Map<String, List<Filter>> filters = options.getFilters();
         if (ns == null && (filters == null || filters.isEmpty())) return results;
 
         List<MemoryResult> filtered = new ArrayList<>();
@@ -1079,12 +1079,16 @@ public class RogueMemory implements AutoCloseable {
             if (ns != null && !ns.equals(r.getNamespace())) continue;
             if (filters != null && !filters.isEmpty()) {
                 boolean match = true;
-                for (Map.Entry<String, String> f : filters.entrySet()) {
-                    Map<String, String> meta = r.getMetadata();
-                    if (meta == null || !f.getValue().equals(meta.get(f.getKey()))) {
-                        match = false;
-                        break;
+                Map<String, String> meta = r.getMetadata();
+                for (Map.Entry<String, List<Filter>> entry : filters.entrySet()) {
+                    String actualValue = meta == null ? null : meta.get(entry.getKey());
+                    for (Filter f : entry.getValue()) {
+                        if (!f.test(actualValue)) {
+                            match = false;
+                            break;
+                        }
                     }
+                    if (!match) break;
                 }
                 if (!match) continue;
             }

@@ -1,29 +1,31 @@
 package com.yomahub.roguemap.memory;
 
-import java.util.Collections;
-import java.util.HashMap;
-import java.util.Map;
+import java.util.*;
 
 public class SearchOptions {
-    private final String namespace;                  // null = 搜索所有 namespace
-    private final Map<String, String> filters;       // metadata 精确过滤，空 map = 不过滤
-    private final int rrfConstant;                   // RRF 公式中的 C 值，默认 60
+    private final String namespace;
+    private final Map<String, List<Filter>> filters;
+    private final int rrfConstant;
 
     private SearchOptions(Builder b) {
         this.namespace = b.namespace;
-        this.filters = Collections.unmodifiableMap(b.filters);
+        Map<String, List<Filter>> map = new LinkedHashMap<>();
+        for (Map.Entry<String, List<Filter>> e : b.filters.entrySet()) {
+            map.put(e.getKey(), Collections.unmodifiableList(new ArrayList<>(e.getValue())));
+        }
+        this.filters = Collections.unmodifiableMap(map);
         this.rrfConstant = b.rrfConstant;
     }
 
     public String getNamespace() { return namespace; }
-    public Map<String, String> getFilters() { return filters; }
+    public Map<String, List<Filter>> getFilters() { return filters; }
     public int getRrfConstant() { return rrfConstant; }
 
     public static Builder builder() { return new Builder(); }
 
     public static class Builder {
         private String namespace = null;
-        private final Map<String, String> filters = new HashMap<>();
+        private final Map<String, List<Filter>> filters = new LinkedHashMap<>();
         private int rrfConstant = 60;
 
         public Builder namespace(String namespace) {
@@ -32,7 +34,11 @@ public class SearchOptions {
         }
 
         public Builder filter(String key, String value) {
-            this.filters.put(key, value);
+            return filter(key, Filter.eq(value));
+        }
+
+        public Builder filter(String key, Filter filter) {
+            this.filters.computeIfAbsent(key, k -> new ArrayList<>()).add(filter);
             return this;
         }
 
