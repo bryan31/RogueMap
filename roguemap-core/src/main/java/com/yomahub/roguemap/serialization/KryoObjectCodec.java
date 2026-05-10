@@ -19,6 +19,12 @@ import java.lang.reflect.Modifier;
  */
 public class KryoObjectCodec<T> implements Codec<T> {
 
+    private static final String KRYO_UNSAFE_PROPERTY = "kryo.unsafe";
+
+    static {
+        configureKryoUnsafeForFeatureVersion(currentFeatureVersion());
+    }
+
     private final Class<T> type;
     private final Class<?> rawClass;
     private final Mode mode;
@@ -213,6 +219,28 @@ public class KryoObjectCodec<T> implements Codec<T> {
             }
             return holder;
         });
+    }
+
+    static void configureKryoUnsafeForFeatureVersion(int featureVersion) {
+        if (featureVersion >= 25 && System.getProperty(KRYO_UNSAFE_PROPERTY) == null) {
+            System.setProperty(KRYO_UNSAFE_PROPERTY, "false");
+        }
+    }
+
+    private static int currentFeatureVersion() {
+        String specVersion = System.getProperty("java.specification.version", "8");
+        if (specVersion.startsWith("1.")) {
+            specVersion = specVersion.substring(2);
+        }
+        int dot = specVersion.indexOf('.');
+        if (dot >= 0) {
+            specVersion = specVersion.substring(0, dot);
+        }
+        try {
+            return Integer.parseInt(specVersion);
+        } catch (NumberFormatException e) {
+            return 8;
+        }
     }
 
     /**

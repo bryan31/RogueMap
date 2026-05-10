@@ -1,5 +1,7 @@
 package com.yomahub.roguemap.util;
 
+import com.yomahub.roguemap.memory.UnsafeOps;
+
 import java.io.File;
 import java.io.IOException;
 import java.lang.reflect.Method;
@@ -21,6 +23,9 @@ public class TempFileManager {
     private static final String TEMP_FILE_PREFIX = "roguemap-temp-";
     private static final String TEMP_FILE_SUFFIX = ".mmap";
     private static final long CLEANUP_AGE_HOURS = 24; // 清理超过24小时的临时文件
+    private static final String UNMAP_GC_ONLY = "gc-only";
+    private static final String UNMAP_UNSAFE_INVOKE_CLEANER = "unsafe-invoke-cleaner";
+    private static final String UNMAP_DIRECT_CLEANER = "direct-cleaner";
 
     static {
         // 启动时自动清理过期的临时文件
@@ -95,8 +100,10 @@ public class TempFileManager {
      * 强制 unmap MappedByteBuffer
      * 解决 Windows 平台文件句柄未释放的问题
      *
-     * 优先使用 Java 9+ 的 Unsafe.invokeCleaner()，
+     * unsafe 内存访问模式下，优先使用 Java 9+ 的 Unsafe.invokeCleaner()，
      * 在 Java 8 上降级使用 DirectByteBuffer.cleaner().clean()。
+     * registered 内存访问模式下不再触发 Unsafe 清理，避免 JDK 25+ 运行时告警；
+     * 调用方会先释放注册引用，再由 JVM/OS 处理映射生命周期。
      *
      * @param buffer 要 unmap 的缓冲区
      */
@@ -105,19 +112,25 @@ public class TempFileManager {
             return;
         }
 
-        // 优先尝试 Java 9+ 方式：Unsafe.invokeCleaner()
-        try {
-            Class<?> unsafeClass = Class.forName("sun.misc.Unsafe");
-            java.lang.reflect.Field unsafeField = unsafeClass.getDeclaredField("theUnsafe");
-            unsafeField.setAccessible(true);
-            Object unsafe = unsafeField.get(null);
-            Method invokeCleaner = unsafeClass.getMethod("invokeCleaner", java.nio.ByteBuffer.class);
-            invokeCleaner.invoke(unsafe, buffer);
-            return; // Java 9+ 路径成功
-        } catch (NoSuchMethodException e) {
-            // Java 8：invokeCleaner 不存在，降级到旧方式
-        } catch (Exception e) {
-            System.err.println("警告: invokeCleaner 调用失败: " + e.getMessage());
+        String strategy = selectUnmapStrategy(UnsafeOps.memoryAccessMode(), currentFeatureVersion());
+        if (UNMAP_GC_ONLY.equals(strategy)) {
+            return;
+        }
+
+        if (UNMAP_UNSAFE_INVOKE_CLEANER.equals(strategy)) {
+            try {
+                Class<?> unsafeClass = Class.forName("sun.misc.Unsafe");
+                java.lang.reflect.Field unsafeField = unsafeClass.getDeclaredField("theUnsafe");
+                unsafeField.setAccessible(true);
+                Object unsafe = unsafeField.get(null);
+                Method invokeCleaner = unsafeClass.getMethod("invokeCleaner", java.nio.ByteBuffer.class);
+                invokeCleaner.invoke(unsafe, buffer);
+                return; // Java 9+ 路径成功
+            } catch (NoSuchMethodException e) {
+                // Java 8：invokeCleaner 不存在，降级到旧方式
+            } catch (Exception e) {
+                System.err.println("警告: invokeCleaner 调用失败: " + e.getMessage());
+            }
         }
 
         // Java 8 降级方式：DirectByteBuffer.cleaner().clean()
@@ -132,6 +145,29 @@ public class TempFileManager {
             }
         } catch (Exception e) {
             System.err.println("警告: 无法强制 unmap MappedByteBuffer: " + e.getMessage());
+        }
+    }
+
+    static String selectUnmapStrategy(String memoryAccessMode, int featureVersion) {
+        if ("registered".equals(memoryAccessMode)) {
+            return UNMAP_GC_ONLY;
+        }
+        return featureVersion >= 9 ? UNMAP_UNSAFE_INVOKE_CLEANER : UNMAP_DIRECT_CLEANER;
+    }
+
+    private static int currentFeatureVersion() {
+        String specVersion = System.getProperty("java.specification.version", "8");
+        if (specVersion.startsWith("1.")) {
+            specVersion = specVersion.substring(2);
+        }
+        int dot = specVersion.indexOf('.');
+        if (dot >= 0) {
+            specVersion = specVersion.substring(0, dot);
+        }
+        try {
+            return Integer.parseInt(specVersion);
+        } catch (NumberFormatException e) {
+            return 8;
         }
     }
 

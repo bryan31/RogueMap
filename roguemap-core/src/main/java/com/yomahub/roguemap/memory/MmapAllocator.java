@@ -435,6 +435,8 @@ public class MmapAllocator implements Allocator {
                     raf.close();
                 }
 
+                releaseRegisteredSegmentAddresses();
+
                 // 立即删除临时文件
                 TempFileManager.deleteImmediately(file, segments.toArray(new MappedByteBuffer[0]));
             } else {
@@ -453,6 +455,8 @@ public class MmapAllocator implements Allocator {
                     raf.close();
                 }
 
+                releaseRegisteredSegmentAddresses();
+
                 // 强制释放 MappedByteBuffer（Windows 上关闭 FileChannel 不会自动释放文件句柄，
                 // 若不显式 unmap，compact()/delete() 时 rename 会失败）
                 for (MappedByteBuffer segment : segments) {
@@ -463,6 +467,14 @@ public class MmapAllocator implements Allocator {
             }
         } catch (Exception e) {
             throw new RuntimeException("关闭内存映射文件失败", e);
+        }
+    }
+
+    private void releaseRegisteredSegmentAddresses() {
+        for (Long baseAddress : segmentBaseAddresses) {
+            if (baseAddress != null) {
+                UnsafeOps.releaseDirectBufferAddress(baseAddress);
+            }
         }
     }
 

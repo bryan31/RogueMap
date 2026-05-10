@@ -94,3 +94,5 @@ jmh-result.json
 # Test data
 test-data/
 benchmark-results/
+.claude
+.codex

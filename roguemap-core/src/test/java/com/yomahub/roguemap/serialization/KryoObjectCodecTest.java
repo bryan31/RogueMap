@@ -17,11 +17,15 @@ import static org.junit.jupiter.api.Assertions.*;
  */
 class KryoObjectCodecTest {
 
+    private static final String KRYO_UNSAFE_PROPERTY = "kryo.unsafe";
+
     private long address;
+    private String originalKryoUnsafe;
     private static final int BUFFER_SIZE = 1024;
 
     @BeforeEach
     void setUp() {
+        originalKryoUnsafe = System.getProperty(KRYO_UNSAFE_PROPERTY);
         // 分配测试用的堆外内存
         address = UnsafeOps.allocate(BUFFER_SIZE);
     }
@@ -31,6 +35,42 @@ class KryoObjectCodecTest {
         // 释放堆外内存
         if (address != 0) {
             UnsafeOps.free(address);
+        }
+        restoreKryoUnsafeProperty();
+    }
+
+    @Test
+    void testDisableKryoUnsafeOnJdk25WhenUserDidNotConfigureIt() {
+        System.clearProperty(KRYO_UNSAFE_PROPERTY);
+
+        KryoObjectCodec.configureKryoUnsafeForFeatureVersion(25);
+
+        assertEquals("false", System.getProperty(KRYO_UNSAFE_PROPERTY));
+    }
+
+    @Test
+    void testKeepExplicitKryoUnsafeConfigurationOnJdk25() {
+        System.setProperty(KRYO_UNSAFE_PROPERTY, "true");
+
+        KryoObjectCodec.configureKryoUnsafeForFeatureVersion(25);
+
+        assertEquals("true", System.getProperty(KRYO_UNSAFE_PROPERTY));
+    }
+
+    @Test
+    void testKeepKryoDefaultBeforeJdk25() {
+        System.clearProperty(KRYO_UNSAFE_PROPERTY);
+
+        KryoObjectCodec.configureKryoUnsafeForFeatureVersion(24);
+
+        assertNull(System.getProperty(KRYO_UNSAFE_PROPERTY));
+    }
+
+    private void restoreKryoUnsafeProperty() {
+        if (originalKryoUnsafe == null) {
+            System.clearProperty(KRYO_UNSAFE_PROPERTY);
+        } else {
+            System.setProperty(KRYO_UNSAFE_PROPERTY, originalKryoUnsafe);
         }
     }
 
