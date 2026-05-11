@@ -46,9 +46,9 @@
 
 - **四种数据结构** — RogueMap、RogueList、RogueSet、RogueQueue
 - **持久化支持** — 进程重启后数据自动恢复，支持崩溃恢复（CRC32 校验 + 写入代数 + 脏标志）
-- **自动扩容** — 文件写满自动增长
-- **事务支持** — 原子多键操作，Read Committed 隔离级别
-- **TTL 过期** — 所有四种数据结构均支持默认或单条 TTL
+- **自动扩容** — 通过 `autoExpand(true)` 可选开启文件自动增长
+- **事务支持** — RogueMap 默认分段索引支持原子多键操作，Read Committed 隔离级别
+- **TTL 过期** — RogueMap 支持默认 TTL 与单条 TTL
 - **碎片整理** — Copy-on-Compact 方式回收碎片空间
 - **检查点** — 手动及自动（时间间隔或操作次数）触发检查点
 - **零拷贝序列化** — 原始类型直接内存布局
@@ -65,21 +65,21 @@
 <dependency>
     <groupId>com.yomahub</groupId>
     <artifactId>roguemap-core</artifactId>
-    <version>1.1.0</version>
+    <version>1.1.5</version>
 </dependency>
 
 <!-- 通用 Embedding 客户端（零额外依赖） -->
 <dependency>
     <groupId>com.yomahub</groupId>
     <artifactId>roguemap-embedding</artifactId>
-    <version>1.1.0</version>
+    <version>1.1.5</version>
 </dependency>
 
 <!-- AI 记忆层 -->
 <dependency>
     <groupId>com.yomahub</groupId>
     <artifactId>roguemap-memory</artifactId>
-    <version>1.1.0</version>
+    <version>1.1.5</version>
 </dependency>
 ```
 
@@ -118,7 +118,7 @@ RogueMap<String, Long> lowHeapMap = RogueMap.<String, Long>mmap()
     .build();
 
 // 事务 — 原子多键操作
-try (RogueMap.Transaction<String, Long> txn = map.beginTransaction()) {
+try (RogueMapTransaction<String, Long> txn = map.beginTransaction()) {
     txn.put("key1", 1L);
     txn.put("key2", 2L);
     txn.commit();  // 原子提交；close() 未 commit 自动回滚
@@ -131,7 +131,7 @@ map.put("session", 42L, 30, TimeUnit.SECONDS);
 map.forEach((key, value) -> System.out.println(key + " = " + value));
 ```
 
-> `lowHeapIndex()` 仅支持 `StringCodec.INSTANCE`，不支持 `beginTransaction()`。
+> 事务仅支持默认的 `segmentedIndex(...)` 实现。`basicIndex()`、`primitiveIndex()` 和 `lowHeapIndex()` 均不支持 `beginTransaction()`。
 
 ### RogueList — 双向链表
 
@@ -186,10 +186,10 @@ RogueQueue<Long> circular = RogueQueue.<Long>mmap()
 
 ## TTL 过期
 
-所有四种数据结构均支持 TTL。
+RogueMap 同时支持构建器级默认 TTL 与单条 TTL。
 
 ```java
-// 全局默认 TTL
+// Map 全局默认 TTL
 RogueMap<String, String> map = RogueMap.<String, String>mmap()
     .temporary()
     .defaultTTL(60, TimeUnit.SECONDS)
@@ -268,7 +268,7 @@ RogueMap<String, Long> map2 = RogueMap.<String, Long>mmap()
 
 你不需要自己查阅或硬编码任何维度数值。`UniversalEmbeddingProvider` 会通过以下两个阶段自动解决：
 
-1. **内置表** — 对上表中所有已知模型，维度在构造时直接从内置表读取，无需任何网络请求。
+1. **内置表** — 对上表中列出的已知模型，维度在构造时直接从内置表读取，无需任何网络请求。
 2. **自动探测** — 对不在内置表中的模型，首次 `embed()` 调用时通过读取返回向量的长度自动确定维度，并缓存供后续使用。
 
 ```java
@@ -297,21 +297,22 @@ System.out.println(provider.getDimension());
 ### RogueMemory
 
 ```java
-RogueMemory mem = RogueMemory.builder()
-    .path("data/mem")
+RogueMemory mem = RogueMemory.mmap()
+    .persistent("data/mem")
     .searchMode(SearchMode.HYBRID)          // HYBRID | VECTOR_ONLY | KEYWORD_ONLY
     .embeddingProvider(new UniversalEmbeddingProvider(apiKey))
     .build();
 
 // 存入记忆（支持元数据与命名空间）
-String id = mem.add("用户偏好深色模式", Map.of("source", "settings"), "user-123");
+Map<String, String> metadata = new HashMap<>();
+metadata.put("source", "settings");
+String id = mem.add("用户偏好深色模式", metadata, "user-123");
 
 // 检索
-List<MemoryResult> results = mem.search(SearchOptions.builder()
-    .query("用户界面偏好")
-    .topK(5)
-    .namespace("user-123")
-    .build());
+List<MemoryResult> results = mem.search(
+    "用户界面偏好",
+    5,
+    SearchOptions.builder().namespace("user-123").build());
 
 for (MemoryResult r : results) {
     System.out.println(r.getContent() + " (score=" + r.getScore() + ")");
@@ -324,8 +325,8 @@ mem.close();
 ```
 
 **检索模式：**
-- `HYBRID`（默认）— 向量 ANN + BM25，通过 RRF 合并结果；需要 `EmbeddingProvider`
-- `VECTOR_ONLY` — 纯 ANN 检索；需要 `EmbeddingProvider`
+- `HYBRID`（默认）— 向量 ANN + BM25，通过 RRF 合并结果；提供 `EmbeddingProvider` 后启用向量检索
+- `VECTOR_ONLY` — 纯 ANN 检索；需要 `EmbeddingProvider` 才会返回结果
 - `KEYWORD_ONLY` — 纯 BM25 检索；无需 `EmbeddingProvider`
 
 ---

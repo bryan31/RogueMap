@@ -46,9 +46,9 @@ Traditional Java collections and embedded databases focus solely on key-value or
 
 - **4 Data Structures** — RogueMap, RogueList, RogueSet, RogueQueue
 - **Persistence** — Data survives process restarts with crash recovery (CRC32 + generation counter + dirty flag)
-- **Auto-Expansion** — Files grow automatically when full
-- **Transactions** — Atomic multi-key operations with Read Committed isolation
-- **TTL** — Per-entry or default time-to-live on all four data structures
+- **Auto-Expansion** — Optional file growth when full via `autoExpand(true)`
+- **Transactions** — Atomic multi-key operations for RogueMap's default segmented index
+- **TTL** — Default and per-entry time-to-live on RogueMap
 - **Compaction** — Reclaim fragmented space via copy-on-compact
 - **Checkpointing** — Manual and automatic (time-interval or operation-count) checkpoint
 - **Zero-Copy Serialization** — Direct memory layout for primitives
@@ -65,21 +65,21 @@ Traditional Java collections and embedded databases focus solely on key-value or
 <dependency>
     <groupId>com.yomahub</groupId>
     <artifactId>roguemap-core</artifactId>
-    <version>1.1.0</version>
+    <version>1.1.5</version>
 </dependency>
 
 <!-- Universal embedding client (zero extra deps) -->
 <dependency>
     <groupId>com.yomahub</groupId>
     <artifactId>roguemap-embedding</artifactId>
-    <version>1.1.0</version>
+    <version>1.1.5</version>
 </dependency>
 
 <!-- AI memory layer -->
 <dependency>
     <groupId>com.yomahub</groupId>
     <artifactId>roguemap-memory</artifactId>
-    <version>1.1.0</version>
+    <version>1.1.5</version>
 </dependency>
 ```
 
@@ -118,7 +118,7 @@ RogueMap<String, Long> lowHeapMap = RogueMap.<String, Long>mmap()
     .build();
 
 // Transaction — atomic multi-key operations
-try (RogueMap.Transaction<String, Long> txn = map.beginTransaction()) {
+try (RogueMapTransaction<String, Long> txn = map.beginTransaction()) {
     txn.put("key1", 1L);
     txn.put("key2", 2L);
     txn.commit();  // Atomic commit; close() without commit() auto-rolls back
@@ -131,7 +131,7 @@ map.put("session", 42L, 30, TimeUnit.SECONDS);
 map.forEach((key, value) -> System.out.println(key + " = " + value));
 ```
 
-> `lowHeapIndex()` is String-key-only and does not support `beginTransaction()`.
+> Transactions are supported only by the default `segmentedIndex(...)` implementation. `basicIndex()`, `primitiveIndex()`, and `lowHeapIndex()` do not support `beginTransaction()`.
 
 ### RogueList — Doubly-Linked List
 
@@ -186,10 +186,10 @@ RogueQueue<Long> circular = RogueQueue.<Long>mmap()
 
 ## TTL
 
-All four data structures support time-to-live expiration.
+RogueMap supports both builder-level default TTL and per-entry TTL.
 
 ```java
-// Default TTL for all entries
+// Default TTL for all map entries
 RogueMap<String, String> map = RogueMap.<String, String>mmap()
     .temporary()
     .defaultTTL(60, TimeUnit.SECONDS)
@@ -268,7 +268,7 @@ RogueMap<String, Long> map2 = RogueMap.<String, Long>mmap()
 
 You never need to look up or hard-code a dimension. `UniversalEmbeddingProvider` resolves it automatically in two stages:
 
-1. **Built-in table** — for well-known models (all models in the table above), the dimension is pre-populated at construction time. No network call required.
+1. **Built-in table** — for named well-known models in the table above, the dimension is pre-populated at construction time. No network call required.
 2. **Auto-detection** — for any model not in the built-in table, the dimension is detected on the first `embed()` call by reading the length of the returned vector, then cached for all subsequent calls.
 
 ```java
@@ -297,21 +297,22 @@ System.out.println(provider.getDimension());
 ### RogueMemory
 
 ```java
-RogueMemory mem = RogueMemory.builder()
-    .path("data/mem")
+RogueMemory mem = RogueMemory.mmap()
+    .persistent("data/mem")
     .searchMode(SearchMode.HYBRID)          // HYBRID | VECTOR_ONLY | KEYWORD_ONLY
     .embeddingProvider(new UniversalEmbeddingProvider(apiKey))
     .build();
 
 // Store a memory with optional metadata and namespace
-String id = mem.add("User prefers dark mode", Map.of("source", "settings"), "user-123");
+Map<String, String> metadata = new HashMap<>();
+metadata.put("source", "settings");
+String id = mem.add("User prefers dark mode", metadata, "user-123");
 
 // Search
-List<MemoryResult> results = mem.search(SearchOptions.builder()
-    .query("user UI preferences")
-    .topK(5)
-    .namespace("user-123")
-    .build());
+List<MemoryResult> results = mem.search(
+    "user UI preferences",
+    5,
+    SearchOptions.builder().namespace("user-123").build());
 
 for (MemoryResult r : results) {
     System.out.println(r.getContent() + " (score=" + r.getScore() + ")");
@@ -324,8 +325,8 @@ mem.close();
 ```
 
 **Search modes:**
-- `HYBRID` (default) — vector ANN + BM25 merged via Reciprocal Rank Fusion; requires `EmbeddingProvider`
-- `VECTOR_ONLY` — ANN only; requires `EmbeddingProvider`
+- `HYBRID` (default) — vector ANN + BM25 merged via Reciprocal Rank Fusion; provide `EmbeddingProvider` to enable vector retrieval
+- `VECTOR_ONLY` — ANN only; requires `EmbeddingProvider` to return results
 - `KEYWORD_ONLY` — BM25 only; no `EmbeddingProvider` needed
 
 ---
