@@ -28,7 +28,7 @@ import java.util.concurrent.locks.ReentrantReadWriteLock;
  * 地址计算基于 segmentFileOffsets 二分查找，向后兼容非扩容场景。
  * 线程安全：普通 allocate() 持读锁（CAS 无锁），expand() 持写锁（独占）。
  */
-public class MmapAllocator implements Allocator {
+public class MmapAllocator implements Allocator, AddressTranslator {
 
     private static final long MAX_SEGMENT_SIZE = Integer.MAX_VALUE; // 约 2GB
 
@@ -95,6 +95,16 @@ public class MmapAllocator implements Allocator {
         }
         if (expandFactor < 1.1) {
             throw new IllegalArgumentException("expandFactor 必须 >= 1.1");
+        }
+
+        // 文件头固定占据文件起始的 HEADER_SIZE 字节，且数据分配偏移量从 HEADER_SIZE 开始。
+        // 因此初始文件（以及承载文件头的第一个 mmap 分段）必须至少能容纳完整的文件头，
+        // 否则 close() 写入 4KB 文件头时会越过第一个分段边界
+        // （JDK 25 注册式内存后端会因严格边界检查抛出"地址未注册或访问越界"，
+        //  旧版 Unsafe 后端虽不报错，但会写入分段之外、无法保证持久化）。
+        long minFileSize = com.yomahub.roguemap.storage.MmapFileHeader.HEADER_SIZE;
+        if (fileSize < minFileSize) {
+            fileSize = minFileSize;
         }
 
         this.isTemporary = isTemporary;
@@ -611,6 +621,24 @@ public class MmapAllocator implements Allocator {
             }
         }
         return getFileOffsetForAddress(physAddr);
+    }
+
+    /**
+     * {@link AddressTranslator} 实现：物理地址 → 文件偏移量。
+     * 持久化索引/元数据时使用，可正确处理多分段（扩容）布局。
+     */
+    @Override
+    public long toFileOffset(long physicalAddress) {
+        return getFileOffsetForAddressFast(physicalAddress);
+    }
+
+    /**
+     * {@link AddressTranslator} 实现：文件偏移量 → 物理地址。
+     * 恢复索引/元数据时使用。
+     */
+    @Override
+    public long toAddress(long fileOffset) {
+        return getAddressForOffsetFast(fileOffset);
     }
 
     private int findSegmentIndex(long[] offsets, long offset) {

@@ -1,5 +1,6 @@
 package com.yomahub.roguemap.index;
 
+import com.yomahub.roguemap.memory.AddressTranslator;
 import com.yomahub.roguemap.memory.UnsafeOps;
 import com.yomahub.roguemap.serialization.Codec;
 
@@ -258,7 +259,7 @@ public class HashIndex<K> implements Index<K> {
     }
 
     @Override
-    public int serializeWithOffsets(long address, long baseAddress) {
+    public int serializeWithOffsets(long address, AddressTranslator translator) {
         if (keyCodec == null) {
             throw new UnsupportedOperationException("无法序列化：keyCodec 为 null");
         }
@@ -287,8 +288,8 @@ public class HashIndex<K> implements Index<K> {
             int actualKeySize = keyCodec.encode(currentAddr, key);
             currentAddr += actualKeySize;
 
-            // 写入相对偏移量（而不是绝对地址）
-            long offset = entry.getValue().address - baseAddress;
+            // 写入文件偏移量（而不是绝对地址）
+            long offset = translator.toFileOffset(entry.getValue().address);
             UnsafeOps.putLong(currentAddr, offset);
             currentAddr += 8;
 
@@ -301,7 +302,7 @@ public class HashIndex<K> implements Index<K> {
     }
 
     @Override
-    public void deserializeWithOffsets(long address, int totalSize, long baseAddress) {
+    public void deserializeWithOffsets(long address, int totalSize, AddressTranslator translator) {
         if (keyCodec == null) {
             throw new UnsupportedOperationException("无法反序列化：keyCodec 为 null");
         }
@@ -323,12 +324,12 @@ public class HashIndex<K> implements Index<K> {
             K key = keyCodec.decode(currentAddr);
             currentAddr += keySize;
 
-            // 读取相对偏移量
+            // 读取文件偏移量
             long offset = UnsafeOps.getLong(currentAddr);
             currentAddr += 8;
 
             // 重新计算绝对内存地址
-            long addr = baseAddress + offset;
+            long addr = translator.toAddress(offset);
 
             // 读取 size
             int sz = UnsafeOps.getInt(currentAddr);

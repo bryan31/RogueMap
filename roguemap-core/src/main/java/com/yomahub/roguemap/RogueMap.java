@@ -9,6 +9,7 @@ import com.yomahub.roguemap.index.LowHeapOptions;
 import com.yomahub.roguemap.index.LowHeapStringIndex;
 import com.yomahub.roguemap.index.LongPrimitiveIndex;
 import com.yomahub.roguemap.index.SegmentedHashIndex;
+import com.yomahub.roguemap.map.RogueMapIterator;
 import com.yomahub.roguemap.memory.Allocator;
 import com.yomahub.roguemap.memory.MmapAllocator;
 import com.yomahub.roguemap.memory.UnsafeOps;
@@ -21,6 +22,8 @@ import com.yomahub.roguemap.storage.StorageEngine;
 import com.yomahub.roguemap.util.TTLUtils;
 
 import java.io.File;
+import java.util.Iterator;
+import java.util.Map;
 import java.util.concurrent.TimeUnit;
 import java.util.function.BiConsumer;
 
@@ -30,7 +33,7 @@ import java.util.function.BiConsumer;
  * @param <K> 键类型
  * @param <V> 值类型
  */
-public class RogueMap<K, V> implements AutoCloseable {
+public class RogueMap<K, V> implements Iterable<Map.Entry<K, V>>, AutoCloseable {
 
     private final Index<K> index;
     private final StorageEngine storage;
@@ -285,6 +288,79 @@ public class RogueMap<K, V> implements AutoCloseable {
     }
 
     /**
+     * 返回遍历所有键值对的迭代器，使 RogueMap 支持增强 for 循环。
+     *
+     * <p>构造迭代器时会对当前索引做一次快照（仅快照键与值地址，值本身惰性解码），
+     * 因此遍历期间不应修改 map（添加 / 更新 / 删除），否则结果不确定。
+     * 已过期的条目会被跳过，语义与 {@link #forEach} 一致。
+     *
+     * <p>示例：
+     * <pre>{@code
+     * for (Map.Entry<String, User> entry : map) {
+     *     System.out.println(entry.getKey() + " = " + entry.getValue());
+     * }
+     * }</pre>
+     *
+     * @return 键值对迭代器
+     */
+    @Override
+    public Iterator<Map.Entry<K, V>> iterator() {
+        return new RogueMapIterator<>(index, valueCodec);
+    }
+
+    /**
+     * 返回可遍历所有键的 {@link Iterable}，便于用 for 循环只遍历键。
+     *
+     * <pre>{@code
+     * for (String key : map.keys()) { ... }
+     * }</pre>
+     *
+     * @return 键的可迭代视图
+     */
+    public Iterable<K> keys() {
+        return () -> {
+            Iterator<Map.Entry<K, V>> it = iterator();
+            return new Iterator<K>() {
+                @Override
+                public boolean hasNext() {
+                    return it.hasNext();
+                }
+
+                @Override
+                public K next() {
+                    return it.next().getKey();
+                }
+            };
+        };
+    }
+
+    /**
+     * 返回可遍历所有值的 {@link Iterable}，便于用 for 循环只遍历值。
+     *
+     * <pre>{@code
+     * for (User value : map.values()) { ... }
+     * }</pre>
+     *
+     * @return 值的可迭代视图
+     */
+    public Iterable<V> values() {
+        return () -> {
+            Iterator<Map.Entry<K, V>> it = iterator();
+            return new Iterator<V>() {
+                @Override
+                public boolean hasNext() {
+                    return it.hasNext();
+                }
+
+                @Override
+                public V next() {
+                    return it.next().getValue();
+                }
+            };
+        };
+    }
+
+    /**
      * 移除所有条目
      */
     public void clear() {
@@ -395,8 +471,6 @@ public class RogueMap<K, V> implements AutoCloseable {
         // 1. 创建新文件的 allocator
         MmapAllocator newAllocator = new MmapAllocator(tempPath, newAllocateSize, false);
         try {
-            long newBaseAddress = newAllocator.getBaseAddress();
-
             // 2. 创建同类型的新索引
             Index<K> newIndex = createIndexByType(indexType, keyCodec, newAllocator, LowHeapOptions.defaults());
 
@@ -415,8 +489,9 @@ public class RogueMap<K, V> implements AutoCloseable {
             // 4. 序列化新索引到新文件
             long currentDataOffset = newAllocator.usedMemory();
             int newIndexSize = newIndex.serializedSize();
-            long indexAddress = newBaseAddress + currentDataOffset;
-            newIndex.serializeWithOffsets(indexAddress, newBaseAddress);
+            long indexAddress = newAllocator.getAddressForOffset(currentDataOffset);
+            // 使用文件偏移量序列化（newAllocator 即 AddressTranslator），多段安全
+            newIndex.serializeWithOffsets(indexAddress, newAllocator);
 
             MmapFileHeader header = new MmapFileHeader();
             header.setMagicNumber(MmapFileHeader.MAGIC_NUMBER);
@@ -598,12 +673,10 @@ public class RogueMap<K, V> implements AutoCloseable {
         // 计算索引在文件中的逻辑偏移（用于 reload 时定位索引）
         long indexOffset = mmapAllocator.getFileOffsetForAddress(indexAddress);
 
-        // baseAddress 始终是 segment 0 的物理基址，
-        // 序列化存储的相对偏移 = physAddr - baseAddress（单段时等于文件偏移，多段时仅用于当次会话内读写）
-        long baseAddress = mmapAllocator.getBaseAddress();
-
-        // 序列化索引（使用相对偏移量）
-        index.serializeWithOffsets(indexAddress, baseAddress);
+        // 序列化索引：存储「文件偏移量」而非「相对第0段基址的偏移」。
+        // mmapAllocator 实现了 AddressTranslator，可正确处理自动扩容产生的多分段布局，
+        // 保证跨会话重新打开时换算回正确的物理地址。
+        index.serializeWithOffsets(indexAddress, mmapAllocator);
 
         // 更新头部
         com.yomahub.roguemap.storage.MmapFileHeader header =
@@ -1056,9 +1129,9 @@ public class RogueMap<K, V> implements AutoCloseable {
                     }
                     index = createIndexFromType(header.getIndexType(), keyCodec, mmapAllocator);
                     if (header.getIndexSize() > 0) {
-                        long baseAddress = mmapAllocator.getBaseAddress();
                         long indexAddress = mmapAllocator.getAddressForOffset(header.getIndexOffset());
-                        index.deserializeWithOffsets(indexAddress, (int) header.getIndexSize(), baseAddress);
+                        // 反序列化：以文件偏移量恢复（mmapAllocator 即 AddressTranslator），多段安全
+                        index.deserializeWithOffsets(indexAddress, (int) header.getIndexSize(), mmapAllocator);
                     }
 
                     // 非低堆索引恢复后，继续沿用 header.currentOffset 作为数据写入起点。

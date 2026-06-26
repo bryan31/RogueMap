@@ -1,6 +1,7 @@
 package com.yomahub.roguemap.set;
 
 import com.yomahub.roguemap.index.IndexEntryConsumer;
+import com.yomahub.roguemap.memory.AddressTranslator;
 import com.yomahub.roguemap.memory.MmapAllocator;
 import com.yomahub.roguemap.memory.UnsafeOps;
 import com.yomahub.roguemap.serialization.Codec;
@@ -216,9 +217,9 @@ public class SetIndex<E> implements SetIndexStore<E> {
     }
 
     /**
-     * 序列化到内存地址（使用相对偏移量）
+     * 序列化到内存地址（使用文件偏移量）
      */
-    public int serializeWithOffsets(long address, long baseAddress) {
+    public int serializeWithOffsets(long address, AddressTranslator translator) {
         long currentAddr = address;
 
         // 写入 segment count
@@ -247,8 +248,8 @@ public class SetIndex<E> implements SetIndexStore<E> {
                     int actualSize = elementCodec.encode(currentAddr, element);
                     currentAddr += actualSize;
 
-                    // 写入相对偏移量
-                    long offset = value.address - baseAddress;
+                    // 写入文件偏移量
+                    long offset = translator.toFileOffset(value.address);
                     UnsafeOps.putLong(currentAddr, offset);
                     currentAddr += 8;
 
@@ -316,9 +317,9 @@ public class SetIndex<E> implements SetIndexStore<E> {
     }
 
     /**
-     * 从内存地址反序列化（使用相对偏移量）
+     * 从内存地址反序列化（使用文件偏移量）
      */
-    public void deserializeWithOffsets(long address, int totalSize, long baseAddress) {
+    public void deserializeWithOffsets(long address, int totalSize, AddressTranslator translator) {
         long currentAddr = address;
 
         // 读取 segment count
@@ -362,12 +363,12 @@ public class SetIndex<E> implements SetIndexStore<E> {
             E element = elementCodec.decode(currentAddr);
             currentAddr += elementSize;
 
-            // 读取相对偏移量
+            // 读取文件偏移量
             long offset = UnsafeOps.getLong(currentAddr);
             currentAddr += 8;
 
             // 计算绝对地址
-            long addr = baseAddress + offset;
+            long addr = translator.toAddress(offset);
 
             // 读取 size
             int sz = UnsafeOps.getInt(currentAddr);

@@ -113,12 +113,12 @@ public class LowHeapStringSetIndex implements SetIndexStore<String> {
 
     @Override
     public int serializeWithFileOffsets(long address, MmapAllocator mmapAllocator) {
-        return delegate.serializeWithOffsets(address, mmapAllocator.getBaseAddress());
+        return delegate.serializeWithOffsets(address, mmapAllocator);
     }
 
     @Override
     public void deserializeWithFileOffsets(long address, int totalSize, MmapAllocator mmapAllocator) {
-        delegate.deserializeWithOffsets(address, totalSize, mmapAllocator.getBaseAddress());
+        delegate.deserializeWithOffsets(address, totalSize, mmapAllocator);
     }
 
     public long estimateHeapBytes() {

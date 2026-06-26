@@ -1005,7 +1005,9 @@ public class MapFunctionalTest {
         map.put("key", "value");
 
         // 传入 null action 应该抛出异常
-        assertThrows(IllegalArgumentException.class, () -> map.forEach(null));
+        // 显式转型以消除与 Iterable.forEach(Consumer) 的重载歧义（仅 null 字面量存在歧义）
+        assertThrows(IllegalArgumentException.class,
+                () -> map.forEach((java.util.function.BiConsumer<String, String>) null));
 
         map.close();
     }

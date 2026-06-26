@@ -1,5 +1,6 @@
 package com.yomahub.roguemap.index;
 
+import com.yomahub.roguemap.memory.AddressTranslator;
 import com.yomahub.roguemap.memory.MmapAllocator;
 import com.yomahub.roguemap.memory.UnsafeOps;
 
@@ -325,12 +326,12 @@ public class LowHeapStringIndex implements Index<String> {
 
     @Override
     public int serialize(long address) {
-        return serializeWithOffsets(address, allocator.getBaseAddress());
+        return serializeWithOffsets(address, allocator);
     }
 
     @Override
     public void deserialize(long address, int totalSize) {
-        deserializeWithOffsets(address, totalSize, allocator.getBaseAddress());
+        deserializeWithOffsets(address, totalSize, allocator);
     }
 
     @Override
@@ -339,7 +340,9 @@ public class LowHeapStringIndex implements Index<String> {
     }
 
     @Override
-    public int serializeWithOffsets(long address, long baseAddress) {
+    public int serializeWithOffsets(long address, AddressTranslator translator) {
+        // 槽位中存储的是文件偏移量（put 时已通过 getFileOffsetForAddressFast 转换），
+        // 跨会话稳定，因此此处直接原样拷贝，无需再用 translator 转换。
         long current = address;
 
         UnsafeOps.putInt(current, FORMAT_VERSION);
@@ -373,7 +376,7 @@ public class LowHeapStringIndex implements Index<String> {
     }
 
     @Override
-    public void deserializeWithOffsets(long address, int totalSize, long baseAddress) {
+    public void deserializeWithOffsets(long address, int totalSize, AddressTranslator translator) {
         clear();
 
         long current = address;

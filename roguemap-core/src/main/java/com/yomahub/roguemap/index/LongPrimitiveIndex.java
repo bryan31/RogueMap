@@ -1,5 +1,6 @@
 package com.yomahub.roguemap.index;
 
+import com.yomahub.roguemap.memory.AddressTranslator;
 import com.yomahub.roguemap.memory.UnsafeOps;
 import java.util.concurrent.locks.StampedLock;
 
@@ -375,7 +376,7 @@ public class LongPrimitiveIndex implements Index<Long> {
     }
 
     @Override
-    public int serializeWithOffsets(long address, long baseAddress) {
+    public int serializeWithOffsets(long address, AddressTranslator translator) {
         long currentAddr = address;
 
         // 写入 entry count
@@ -392,8 +393,8 @@ public class LongPrimitiveIndex implements Index<Long> {
                     UnsafeOps.putLong(currentAddr, key);
                     currentAddr += 8;
 
-                    // 写入相对偏移量
-                    long offset = addr - baseAddress;
+                    // 写入文件偏移量
+                    long offset = translator.toFileOffset(addr);
                     UnsafeOps.putLong(currentAddr, offset);
                     currentAddr += 8;
 
@@ -408,7 +409,7 @@ public class LongPrimitiveIndex implements Index<Long> {
     }
 
     @Override
-    public void deserializeWithOffsets(long address, int totalSize, long baseAddress) {
+    public void deserializeWithOffsets(long address, int totalSize, AddressTranslator translator) {
         long currentAddr = address;
 
         // 读取 entry count
@@ -424,12 +425,12 @@ public class LongPrimitiveIndex implements Index<Long> {
             long key = UnsafeOps.getLong(currentAddr);
             currentAddr += 8;
 
-            // 读取相对偏移量
+            // 读取文件偏移量
             long offset = UnsafeOps.getLong(currentAddr);
             currentAddr += 8;
 
             // 重新计算绝对内存地址
-            long addr = baseAddress + offset;
+            long addr = translator.toAddress(offset);
 
             // 读取 size
             int sz = UnsafeOps.getInt(currentAddr);

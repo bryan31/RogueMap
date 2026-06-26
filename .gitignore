@@ -96,3 +96,4 @@ test-data/
 benchmark-results/
 .claude
 .codex
+.codegraph

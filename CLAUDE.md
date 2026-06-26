@@ -72,6 +72,7 @@ Memory-Mapped Files (persistent or temporary)
 - `RogueMap.mmap().persistent(path)` - Persistent file mode (data survives restart)
 - Index options: `basicIndex()`, `segmentedIndex(64)`, `primitiveIndex()`, `lowHeapIndex()`
 - `forEach(BiConsumer<K,V>)` - Iterate over all key-value pairs
+- `implements Iterable<Map.Entry<K,V>>` - supports enhanced `for` loop (`for (Map.Entry<K,V> e : map)`); also `keys()` / `values()` return lazy `Iterable` views. Iterator (`map/RogueMapIterator`) snapshots keys+value-addresses, decodes values lazily, skips expired entries
 - TTL support: `defaultTTL(ttl, unit)` in builder; data stored as `[expireTime(8 bytes)][actual data]`
 - Transactions: `beginTransaction()` returns AutoCloseable `Transaction<K,V>`
 

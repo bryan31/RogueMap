@@ -1,5 +1,7 @@
 package com.yomahub.roguemap.index;
 
+import com.yomahub.roguemap.memory.AddressTranslator;
+
 /**
  * 索引接口，用于键值查找
  *
@@ -136,20 +138,42 @@ public interface Index<K> {
     int serializedSize();
 
     /**
-     * 序列化索引到内存地址（使用相对偏移量，用于 MMAP 持久化）
+     * 序列化索引到内存地址（使用文件偏移量，用于 MMAP 持久化）。
      *
-     * @param address 目标地址
-     * @param baseAddress 基础地址，用于计算相对偏移量
+     * @param address    目标地址
+     * @param translator 物理地址 ↔ 文件偏移量转换器
      * @return 写入的字节数
      */
-    int serializeWithOffsets(long address, long baseAddress);
+    int serializeWithOffsets(long address, AddressTranslator translator);
 
     /**
-     * 从内存地址反序列化索引（使用相对偏移量，用于 MMAP 恢复）
+     * 从内存地址反序列化索引（使用文件偏移量，用于 MMAP 恢复）。
      *
-     * @param address 源地址
-     * @param size 数据大小
-     * @param baseAddress 基础地址，用于重新计算内存地址
+     * @param address    源地址
+     * @param size       数据大小
+     * @param translator 物理地址 ↔ 文件偏移量转换器
      */
-    void deserializeWithOffsets(long address, int size, long baseAddress);
+    void deserializeWithOffsets(long address, int size, AddressTranslator translator);
+
+    /**
+     * 兼容旧调用：以「相对第0段基址」语义序列化。
+     *
+     * @deprecated 多分段（扩容）场景下相对偏移不等于文件偏移，请改用
+     *             {@link #serializeWithOffsets(long, AddressTranslator)}。
+     */
+    @Deprecated
+    default int serializeWithOffsets(long address, long baseAddress) {
+        return serializeWithOffsets(address, AddressTranslator.relativeTo(baseAddress));
+    }
+
+    /**
+     * 兼容旧调用：以「相对第0段基址」语义反序列化。
+     *
+     * @deprecated 多分段（扩容）场景下相对偏移不等于文件偏移，请改用
+     *             {@link #deserializeWithOffsets(long, int, AddressTranslator)}。
+     */
+    @Deprecated
+    default void deserializeWithOffsets(long address, int size, long baseAddress) {
+        deserializeWithOffsets(address, size, AddressTranslator.relativeTo(baseAddress));
+    }
 }
