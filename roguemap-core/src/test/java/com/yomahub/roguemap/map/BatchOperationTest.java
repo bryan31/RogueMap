@@ -12,6 +12,7 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.Random;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -400,6 +401,77 @@ public class BatchOperationTest {
                 for (int i = 0; i < keysPerThread; i++) {
                     assertEquals("v" + (rounds - 1) + "-" + i, map.get("t" + t + "-k" + i));
                 }
+            }
+        } finally {
+            pool.shutdownNow();
+            map.close();
+        }
+    }
+
+    /**
+     * 多线程混合 putAll 与单键 put 对同一组键并发覆写。
+     *
+     * <p>不断言具体值（多次覆写谁赢不确定），只断言：
+     * <ul>
+     *   <li>全程无异常</li>
+     *   <li>终态每个键都可读且值合法（属于已知写入集合）</li>
+     *   <li>size 等于键空间大小（不会因并发导致索引泄漏或重复计数）</li>
+     * </ul>
+     * 参考 {@link ConcurrentSameKeyTest} 的风格。
+     */
+    @Test
+    public void testConcurrentPutAllAndPutSameKey() throws InterruptedException {
+        RogueMap<String, String> map = newTempMap();
+        ExecutorService pool = Executors.newFixedThreadPool(8);
+        try {
+            int keyCount = 200;
+            int rounds = 50;
+            CountDownLatch latch = new CountDownLatch(8);
+            AtomicReference<Throwable> error = new AtomicReference<>();
+
+            for (int t = 0; t < 8; t++) {
+                final int tid = t;
+                pool.submit(() -> {
+                    try {
+                        Random rnd = new Random(tid);
+                        for (int round = 0; round < rounds; round++) {
+                            // 每轮随机选 50 个键，整批 putAll
+                            Map<String, String> batch = new HashMap<>();
+                            for (int i = 0; i < 50; i++) {
+                                String k = "shared-k" + rnd.nextInt(keyCount);
+                                batch.put(k, "t" + tid + "-r" + round + "-v" + i);
+                            }
+                            if ((round & 1) == 0) {
+                                map.putAll(batch);
+                            } else {
+                                // 单键 put 路径
+                                for (Map.Entry<String, String> e : batch.entrySet()) {
+                                    map.put(e.getKey(), e.getValue());
+                                }
+                            }
+                            // 读校验：随机读一个键，确认是合法值（不抛异常、能解码）
+                            String probe = map.get("shared-k" + rnd.nextInt(keyCount));
+                            if (probe != null && !probe.startsWith("t")) {
+                                throw new IllegalStateException("线程 " + tid + " 读到非法值: " + probe);
+                            }
+                        }
+                    } catch (Throwable e) {
+                        error.compareAndSet(null, e);
+                    } finally {
+                        latch.countDown();
+                    }
+                });
+            }
+
+            assertTrue(latch.await(120, TimeUnit.SECONDS), "并发同键测试超时");
+            assertNull(error.get(), "并发执行出现异常: " + error.get());
+
+            // 终态：恰好 keyCount 个键，每个键可读
+            assertEquals(keyCount, map.size(), "并发覆写后 size 应等于键空间大小");
+            for (int i = 0; i < keyCount; i++) {
+                String v = map.get("shared-k" + i);
+                assertNotNull(v, "键 shared-k" + i + " 不可读");
+                assertTrue(v.startsWith("t"), "键 shared-k" + i + " 值非法: " + v);
             }
         } finally {
             pool.shutdownNow();
