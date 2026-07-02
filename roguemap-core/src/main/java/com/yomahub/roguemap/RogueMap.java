@@ -161,8 +161,15 @@ public class RogueMap<K, V> implements Iterable<Map.Entry<K, V>>, AutoCloseable 
      * 单个键的更新各自原子，并发读写可与本操作交错；抛出异常时部分条目可能
      * 已写入。需要原子多键写入时请使用 {@link #beginTransaction()}。
      *
-     * <p>分段索引模式下按段分组、每段仅加一次写锁，批量导入吞吐显著高于
-     * 循环调用 put；其他索引模式下退化为逐条更新（功能等价）。
+     * <p><b>吞吐说明（据实测）</b>：分段索引模式下按段分组、每段仅加一次写锁，
+     * 但在 10 万条短字符串基准下，单线程加速比约 0.5–1.0x、6 线程并发约
+     * 0.65–0.8x——即与循环 {@code put} 基本持平或略低。原因是 putAll 路径额外
+     * 产生 {@link com.yomahub.roguemap.index.BatchEntry} 装箱、entries 列表与
+     * results 数组开销，而段锁本身（64 段 StampedLock）竞争很低，锁摊薄收益
+     * 不足以抵消上述开销；瓶颈更多在 allocator CAS 与值编码上。putAll 的实际
+     * 价值在于 API 便利性、以及一次大批次只触发一次自动 checkpoint 计数
+     * （见 {@link AutoCheckpointManager#onWriteOperations(int)}）。其他索引模式
+     * 下退化为逐条更新（功能等价）。
      *
      * @param m 键值对集合
      */
@@ -226,8 +233,22 @@ public class RogueMap<K, V> implements Iterable<Map.Entry<K, V>>, AutoCloseable 
             throw err;
         }
 
-        // 索引更新阶段：分段索引按段批量提交；异常时已提交的段保持生效（非原子语义）
-        IndexUpdateResult[] results = index.putBatch(entries);
+        // 索引更新阶段：分段索引按段批量提交；异常时已提交的段保持生效（非原子语义）。
+        // 若 putBatch 抛异常（如泛型 K 的 hashCode() 在分组阶段抛出，此时尚无段被提交；
+        // 或极罕见的加锁阶段 OOM），防御性地释放本批次已分配的全部内存。
+        // 说明：在 append-only + allocator.free() no-op 语义下，对已提交段对应的 entry
+        // 调用 free 仅累加 dead bytes 指标、不回收真实内存，因此即便个别段已提交，
+        // 整批 free 也只会让这些段的索引项"提前成为死字节"，不破坏内存安全性，
+        // 非原子语义可接受。
+        IndexUpdateResult[] results;
+        try {
+            results = index.putBatch(entries);
+        } catch (RuntimeException | Error e) {
+            for (BatchEntry<K> en : entries) {
+                allocator.free(en.newAddress, en.newSize);
+            }
+            throw e;
+        }
 
         // 旧值释放阶段（锁外，不解码旧值）
         for (IndexUpdateResult result : results) {

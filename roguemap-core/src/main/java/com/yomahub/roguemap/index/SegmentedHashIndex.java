@@ -293,25 +293,36 @@ public class SegmentedHashIndex<K> implements Index<K> {
             return new IndexUpdateResult[0];
         }
 
-        // 分组阶段（任何加锁之前）：按 segment 分组并校验操作类型
-        TreeMap<Integer, List<Integer>> segToOps = new TreeMap<>();
+        // 分组阶段（任何加锁之前）：用数组下标直接索引段（下标即 segIdx），
+        // 消除 Integer 装箱与 TreeMap 查找开销。opIdx 仍存入 ArrayList<Integer>。
+        @SuppressWarnings("unchecked")
+        List<Integer>[] buckets = new List[segments.length];
         for (int i = 0; i < entries.size(); i++) {
             BatchEntry<K> op = entries.get(i);
             if (op.opType != BatchEntry.OpType.PUT) {
                 throw new IllegalArgumentException("putBatch 仅支持 PUT 操作");
             }
             int segIdx = getSegmentIndex(op.key);
-            segToOps.computeIfAbsent(segIdx, k -> new ArrayList<>()).add(i);
+            List<Integer> bucket = buckets[segIdx];
+            if (bucket == null) {
+                bucket = new ArrayList<>();
+                buckets[segIdx] = bucket;
+            }
+            bucket.add(i);
         }
 
         IndexUpdateResult[] results = new IndexUpdateResult[entries.size()];
 
-        // 逐段独立加锁提交
-        for (Map.Entry<Integer, List<Integer>> group : segToOps.entrySet()) {
-            Segment<K> seg = segments[group.getKey()];
+        // 逐段独立加锁提交（按下标升序遍历，语义与原 TreeMap 实现一致）
+        for (int segIdx = 0; segIdx < buckets.length; segIdx++) {
+            List<Integer> group = buckets[segIdx];
+            if (group == null) {
+                continue;
+            }
+            Segment<K> seg = segments[segIdx];
             long stamp = seg.lock.writeLock();
             try {
-                for (int opIdx : group.getValue()) {
+                for (int opIdx : group) {
                     BatchEntry<K> op = entries.get(opIdx);
                     Entry oldEntry = seg.map.put(op.key, new Entry(op.newAddress, op.newSize));
                     if (oldEntry != null) {
