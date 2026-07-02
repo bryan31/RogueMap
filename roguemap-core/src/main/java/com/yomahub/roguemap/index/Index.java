@@ -2,6 +2,8 @@ package com.yomahub.roguemap.index;
 
 import com.yomahub.roguemap.memory.AddressTranslator;
 
+import java.util.List;
+
 /**
  * 索引接口，用于键值查找
  *
@@ -78,6 +80,35 @@ public interface Index<K> {
      * @return 删除结果，包含被删除值的地址和大小信息
      */
     IndexRemoveResult removeAndGet(K key);
+
+    /**
+     * 批量更新索引（<b>非原子</b>）。
+     *
+     * <p>默认实现逐条调用 {@link #putAndGetOld}。实现类可覆写以按内部分区
+     * 分组、摊薄锁开销（见 {@link SegmentedHashIndex#putBatch}）。
+     *
+     * <p>仅支持 {@link BatchEntry.OpType#PUT} 条目；出现 REMOVE 条目时在
+     * 应用任何操作之前抛出 {@link IllegalArgumentException}（整批拒绝）。
+     *
+     * @param entries 批量 PUT 条目列表（null 或空列表返回空数组）
+     * @return 与 entries 等长、顺序一一对应的旧值信息数组
+     */
+    default IndexUpdateResult[] putBatch(List<BatchEntry<K>> entries) {
+        if (entries == null || entries.isEmpty()) {
+            return new IndexUpdateResult[0];
+        }
+        for (BatchEntry<K> e : entries) {
+            if (e.opType != BatchEntry.OpType.PUT) {
+                throw new IllegalArgumentException("putBatch 仅支持 PUT 操作");
+            }
+        }
+        IndexUpdateResult[] results = new IndexUpdateResult[entries.size()];
+        for (int i = 0; i < entries.size(); i++) {
+            BatchEntry<K> e = entries.get(i);
+            results[i] = putAndGetOld(e.key, e.newAddress, e.newSize);
+        }
+        return results;
+    }
 
     /**
      * 遍历所有索引条目
