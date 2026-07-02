@@ -1,9 +1,13 @@
 package com.yomahub.roguemap.map;
 
 import com.yomahub.roguemap.RogueMap;
+import com.yomahub.roguemap.serialization.PrimitiveCodecs;
 import com.yomahub.roguemap.serialization.StringCodec;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
+import java.io.File;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashMap;
@@ -16,6 +20,25 @@ import static org.junit.jupiter.api.Assertions.*;
  * RogueMap 批量 API（putAll/getAll）功能测试
  */
 public class BatchOperationTest {
+
+    private static final String TEST_FILE = "target/test-batch-persist.db";
+
+    @BeforeEach
+    public void setUp() {
+        deleteTestFile();
+    }
+
+    @AfterEach
+    public void tearDown() {
+        deleteTestFile();
+    }
+
+    private void deleteTestFile() {
+        File file = new File(TEST_FILE);
+        if (file.exists()) {
+            file.delete();
+        }
+    }
 
     private RogueMap<String, String> newTempMap() {
         return RogueMap.<String, String>mmap()
@@ -212,6 +235,117 @@ public class BatchOperationTest {
             assertThrows(IllegalArgumentException.class, () -> map.getAll(null));
         } finally {
             map.close();
+        }
+    }
+
+    // ========== 索引模式矩阵 ==========
+
+    private void verifyBatchRoundtrip(RogueMap<String, String> map) {
+        Map<String, String> batch = new HashMap<>();
+        for (int i = 0; i < 200; i++) {
+            batch.put("key" + i, "value" + i);
+        }
+        map.putAll(batch);
+        assertEquals(200, map.size());
+
+        Map<String, String> got = map.getAll(batch.keySet());
+        assertEquals(200, got.size());
+        for (int i = 0; i < 200; i++) {
+            assertEquals("value" + i, got.get("key" + i));
+        }
+    }
+
+    @Test
+    public void testBatchWithBasicIndex() {
+        RogueMap<String, String> map = RogueMap.<String, String>mmap()
+                .temporary()
+                .allocateSize(10 * 1024 * 1024L)
+                .basicIndex()
+                .keyCodec(new StringCodec())
+                .valueCodec(new StringCodec())
+                .build();
+        try {
+            verifyBatchRoundtrip(map);
+        } finally {
+            map.close();
+        }
+    }
+
+    @Test
+    public void testBatchWithLowHeapIndex() {
+        // lowHeapIndex() 内部用 == 校验编解码器单例（createNewIndex），必须传 StringCodec.INSTANCE
+        RogueMap<String, String> map = RogueMap.<String, String>mmap()
+                .temporary()
+                .allocateSize(10 * 1024 * 1024L)
+                .lowHeapIndex()
+                .keyCodec(StringCodec.INSTANCE)
+                .valueCodec(StringCodec.INSTANCE)
+                .build();
+        try {
+            verifyBatchRoundtrip(map);
+        } finally {
+            map.close();
+        }
+    }
+
+    @Test
+    public void testBatchWithPrimitiveIndex() {
+        // LongPrimitiveIndex 用 0L 作 EMPTY_KEY 哨兵，键从 1 起以避开哨兵值（单键 put(0L) 同样会抛）
+        RogueMap<Long, Long> map = RogueMap.<Long, Long>mmap()
+                .temporary()
+                .allocateSize(10 * 1024 * 1024L)
+                .primitiveIndex()
+                .keyCodec(PrimitiveCodecs.LONG)
+                .valueCodec(PrimitiveCodecs.LONG)
+                .build();
+        try {
+            Map<Long, Long> batch = new HashMap<>();
+            for (long i = 1; i <= 200; i++) {
+                batch.put(i, i * 10);
+            }
+            map.putAll(batch);
+            assertEquals(200, map.size());
+
+            Map<Long, Long> got = map.getAll(batch.keySet());
+            assertEquals(200, got.size());
+            assertEquals(Long.valueOf(50L), got.get(5L));
+            assertEquals(Long.valueOf(1990L), got.get(199L));
+        } finally {
+            map.close();
+        }
+    }
+
+    // ========== 持久化 ==========
+
+    @Test
+    public void testPutAllPersistence() {
+        Map<String, String> batch = new HashMap<>();
+        for (int i = 0; i < 300; i++) {
+            batch.put("pk" + i, "pv" + i);
+        }
+
+        RogueMap<String, String> map1 = RogueMap.<String, String>mmap()
+                .persistent(TEST_FILE)
+                .allocateSize(10 * 1024 * 1024L)
+                .keyCodec(new StringCodec())
+                .valueCodec(new StringCodec())
+                .build();
+        map1.putAll(batch);
+        map1.close();
+
+        RogueMap<String, String> map2 = RogueMap.<String, String>mmap()
+                .persistent(TEST_FILE)
+                .allocateSize(10 * 1024 * 1024L)
+                .keyCodec(new StringCodec())
+                .valueCodec(new StringCodec())
+                .build();
+        try {
+            assertEquals(300, map2.size());
+            Map<String, String> got = map2.getAll(batch.keySet());
+            assertEquals(300, got.size());
+            assertEquals("pv123", got.get("pk123"));
+        } finally {
+            map2.close();
         }
     }
 }
