@@ -12,7 +12,11 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -346,6 +350,60 @@ public class BatchOperationTest {
             assertEquals("pv123", got.get("pk123"));
         } finally {
             map2.close();
+        }
+    }
+
+    // ========== 并发 ==========
+
+    @Test
+    public void testConcurrentPutAllAndGet() throws InterruptedException {
+        RogueMap<String, String> map = newTempMap();
+        ExecutorService pool = Executors.newFixedThreadPool(4);
+        try {
+            int threads = 4;
+            int rounds = 20;
+            int keysPerThread = 100;
+            CountDownLatch latch = new CountDownLatch(threads);
+            AtomicReference<Throwable> error = new AtomicReference<>();
+
+            for (int t = 0; t < threads; t++) {
+                final int tid = t;
+                pool.submit(() -> {
+                    try {
+                        for (int round = 0; round < rounds; round++) {
+                            Map<String, String> batch = new HashMap<>();
+                            for (int i = 0; i < keysPerThread; i++) {
+                                batch.put("t" + tid + "-k" + i, "v" + round + "-" + i);
+                            }
+                            map.putAll(batch);
+                            // 写后立即读自己的键，验证读写交错安全
+                            Map<String, String> got = map.getAll(batch.keySet());
+                            if (got.size() != keysPerThread) {
+                                throw new IllegalStateException(
+                                        "线程 " + tid + " 第 " + round + " 轮读到 " + got.size() + " 条");
+                            }
+                        }
+                    } catch (Throwable e) {
+                        error.compareAndSet(null, e);
+                    } finally {
+                        latch.countDown();
+                    }
+                });
+            }
+
+            assertTrue(latch.await(120, java.util.concurrent.TimeUnit.SECONDS), "并发测试超时");
+            assertNull(error.get(), "并发执行出现异常: " + error.get());
+
+            // 各线程键空间不相交，终态每线程各 keysPerThread 条
+            assertEquals(threads * keysPerThread, map.size());
+            for (int t = 0; t < threads; t++) {
+                for (int i = 0; i < keysPerThread; i++) {
+                    assertEquals("v" + (rounds - 1) + "-" + i, map.get("t" + t + "-k" + i));
+                }
+            }
+        } finally {
+            pool.shutdownNow();
+            map.close();
         }
     }
 }
