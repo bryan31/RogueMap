@@ -84,11 +84,23 @@ public class AutoCheckpointManager {
      * 写操作后调用，用于操作计数模式
      */
     public void onWriteOperation() {
-        if (!running || operationThreshold <= 0) {
+        onWriteOperations(1);
+    }
+
+    /**
+     * 批量记录 n 次写操作（操作计数模式）。
+     *
+     * <p>计数逻辑与单次记录一致：累计达到阈值时通过 CAS 重置计数并触发一次
+     * checkpoint，避免并发下重复触发。
+     *
+     * @param n 本次记录的写操作次数，非正数忽略
+     */
+    public void onWriteOperations(int n) {
+        if (!running || operationThreshold <= 0 || n <= 0) {
             return;
         }
 
-        int count = operationCount.incrementAndGet();
+        int count = operationCount.addAndGet(n);
         if (count >= operationThreshold) {
             // 重置计数器并触发 checkpoint
             // 使用 compareAndSet 避免多次触发
