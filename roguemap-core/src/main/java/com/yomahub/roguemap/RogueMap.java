@@ -1,5 +1,6 @@
 package com.yomahub.roguemap;
 
+import com.yomahub.roguemap.index.BatchEntry;
 import com.yomahub.roguemap.index.HashIndex;
 import com.yomahub.roguemap.index.Index;
 import com.yomahub.roguemap.index.IndexRemoveResult;
@@ -22,8 +23,10 @@ import com.yomahub.roguemap.storage.StorageEngine;
 import com.yomahub.roguemap.util.TTLUtils;
 
 import java.io.File;
+import java.util.ArrayList;
 import java.util.Iterator;
 import java.util.Map;
+import java.util.List;
 import java.util.concurrent.TimeUnit;
 import java.util.function.BiConsumer;
 
@@ -146,6 +149,93 @@ public class RogueMap<K, V> implements Iterable<Map.Entry<K, V>>, AutoCloseable 
             // 异常处理：释放新分配的内存
             allocator.free(newAddress, totalSize);
             throw e;
+        }
+    }
+
+    /**
+     * 批量放入键值对（使用默认 TTL）。
+     *
+     * <p>语义与 {@link java.util.Map#putAll} 一致：<b>不保证跨键原子性</b>。
+     * 单个键的更新各自原子，并发读写可与本操作交错；抛出异常时部分条目可能
+     * 已写入。需要原子多键写入时请使用 {@link #beginTransaction()}。
+     *
+     * <p>分段索引模式下按段分组、每段仅加一次写锁，批量导入吞吐显著高于
+     * 循环调用 put；其他索引模式下退化为逐条更新（功能等价）。
+     *
+     * @param m 键值对集合
+     */
+    public void putAll(Map<? extends K, ? extends V> m) {
+        putAll(m, defaultTTLMillis, TimeUnit.MILLISECONDS);
+    }
+
+    /**
+     * 批量放入键值对（指定 TTL，覆盖默认 TTL）。
+     *
+     * <p>整批条目使用同一过期时间戳。其余语义见 {@link #putAll(Map)}。
+     *
+     * @param m    键值对集合
+     * @param ttl  过期时间（0 表示永不过期）
+     * @param unit 时间单位
+     */
+    public void putAll(Map<? extends K, ? extends V> m, long ttl, TimeUnit unit) {
+        if (m == null) {
+            throw new IllegalArgumentException("批量集合不能为 null");
+        }
+        if (m.isEmpty()) {
+            return;
+        }
+        // 校验阶段：null 键整批拒绝（早于任何内存分配，无副作用）
+        for (K key : m.keySet()) {
+            if (key == null) {
+                throw new IllegalArgumentException("键不能为 null");
+            }
+        }
+
+        long ttlMillis = (ttl > 0 && unit != null) ? unit.toMillis(ttl) : 0;
+        long expireTime = TTLUtils.calculateExpireTime(ttlMillis);
+
+        // 编码分配阶段（锁外）：失败则释放本批次已分配内存后抛出，索引未动
+        List<BatchEntry<K>> entries = new ArrayList<>(m.size());
+        try {
+            for (Map.Entry<? extends K, ? extends V> e : m.entrySet()) {
+                int valueSize = valueCodec.calculateSize(e.getValue());
+                if (valueSize < 0) {
+                    throw new IllegalStateException("无法确定值的大小");
+                }
+                int totalSize = TTLUtils.totalSize(valueSize);
+                long newAddress = allocator.allocate(totalSize);
+                if (newAddress == 0) {
+                    throw new OutOfMemoryError("分配 " + totalSize + " 字节失败");
+                }
+                try {
+                    TTLUtils.writeExpireTime(newAddress, expireTime);
+                    int actualSize = valueCodec.encode(TTLUtils.getDataAddress(newAddress), e.getValue());
+                    entries.add(BatchEntry.put(e.getKey(), newAddress, TTLUtils.totalSize(actualSize)));
+                } catch (RuntimeException | Error encodeErr) {
+                    // 当前条目已分配但尚未记入 entries，单独释放
+                    allocator.free(newAddress, totalSize);
+                    throw encodeErr;
+                }
+            }
+        } catch (RuntimeException | Error err) {
+            for (BatchEntry<K> entry : entries) {
+                allocator.free(entry.newAddress, entry.newSize);
+            }
+            throw err;
+        }
+
+        // 索引更新阶段：分段索引按段批量提交；异常时已提交的段保持生效（非原子语义）
+        IndexUpdateResult[] results = index.putBatch(entries);
+
+        // 旧值释放阶段（锁外，不解码旧值）
+        for (IndexUpdateResult result : results) {
+            if (result.wasPresent) {
+                allocator.free(result.oldAddress, result.oldSize);
+            }
+        }
+
+        if (autoCheckpointManager != null) {
+            autoCheckpointManager.onWriteOperations(entries.size());
         }
     }
 
