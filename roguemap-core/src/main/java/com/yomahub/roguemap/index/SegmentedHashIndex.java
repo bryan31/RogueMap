@@ -276,6 +276,60 @@ public class SegmentedHashIndex<K> implements Index<K> {
     }
 
     /**
+     * 批量更新索引（<b>非原子</b>）——putAll 的高吞吐路径。
+     *
+     * <p>与 {@link #applyBatch}（事务用：全部涉及段<b>同时</b>持写锁、支持
+     * 补偿回滚、保证原子性）不同，本方法按段分组后<b>逐段独立</b>加锁提交，
+     * 段间不保证原子性，锁持有时间短、并发更友好。
+     *
+     * <p>同段内按入参顺序应用；同键多次出现时后者覆盖前者，前者作为旧值返回。
+     *
+     * @param entries 批量 PUT 条目列表（null 或空列表返回空数组）
+     * @return 与 entries 等长、顺序一一对应的旧值信息数组
+     */
+    @Override
+    public IndexUpdateResult[] putBatch(List<BatchEntry<K>> entries) {
+        if (entries == null || entries.isEmpty()) {
+            return new IndexUpdateResult[0];
+        }
+
+        // 分组阶段（任何加锁之前）：按 segment 分组并校验操作类型
+        TreeMap<Integer, List<Integer>> segToOps = new TreeMap<>();
+        for (int i = 0; i < entries.size(); i++) {
+            BatchEntry<K> op = entries.get(i);
+            if (op.opType != BatchEntry.OpType.PUT) {
+                throw new IllegalArgumentException("putBatch 仅支持 PUT 操作");
+            }
+            int segIdx = getSegmentIndex(op.key);
+            segToOps.computeIfAbsent(segIdx, k -> new ArrayList<>()).add(i);
+        }
+
+        IndexUpdateResult[] results = new IndexUpdateResult[entries.size()];
+
+        // 逐段独立加锁提交
+        for (Map.Entry<Integer, List<Integer>> group : segToOps.entrySet()) {
+            Segment<K> seg = segments[group.getKey()];
+            long stamp = seg.lock.writeLock();
+            try {
+                for (int opIdx : group.getValue()) {
+                    BatchEntry<K> op = entries.get(opIdx);
+                    Entry oldEntry = seg.map.put(op.key, new Entry(op.newAddress, op.newSize));
+                    if (oldEntry != null) {
+                        results[opIdx] = IndexUpdateResult.withOldValue(oldEntry.address, oldEntry.size);
+                    } else {
+                        results[opIdx] = IndexUpdateResult.noOldValue();
+                        size.incrementAndGet();
+                    }
+                }
+            } finally {
+                seg.lock.unlockWrite(stamp);
+            }
+        }
+
+        return results;
+    }
+
+    /**
      * 补偿回滚：将已应用的 appliedCount 条操作逆向恢复。
      *
      * <p><b>重要</b>：此方法在 applyBatch() 的 catch 块内调用，此时外层仍持有所有已获取的段写锁
