@@ -24,6 +24,8 @@ import com.yomahub.roguemap.util.TTLUtils;
 
 import java.io.File;
 import java.util.ArrayList;
+import java.util.Collection;
+import java.util.HashMap;
 import java.util.Iterator;
 import java.util.Map;
 import java.util.List;
@@ -267,6 +269,35 @@ public class RogueMap<K, V> implements Iterable<Map.Entry<K, V>>, AutoCloseable 
 
         // 数据没有过期时间（expireTime == 0），直接从地址读取数据
         return valueCodec.decode(TTLUtils.getDataAddress(address));
+    }
+
+    /**
+     * 批量获取。
+     *
+     * <p>返回的 Map 中不包含未找到或已过期的键（过期条目与 {@link #get}
+     * 一致做惰性删除）；集合中的 null 元素被跳过。
+     *
+     * <p>说明：分段索引的读路径是乐观读，本方法不做段级批量优化，
+     * 价值在于 API 便利性。
+     *
+     * @param keys 键集合
+     * @return 命中的键值对（可修改的 HashMap，无序）
+     */
+    public Map<K, V> getAll(Collection<? extends K> keys) {
+        if (keys == null) {
+            throw new IllegalArgumentException("键集合不能为 null");
+        }
+        Map<K, V> result = new HashMap<>(Math.max(16, keys.size() * 2));
+        for (K key : keys) {
+            if (key == null) {
+                continue;
+            }
+            V value = get(key);
+            if (value != null) {
+                result.put(key, value);
+            }
+        }
+        return result;
     }
 
     /**

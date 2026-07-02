@@ -4,6 +4,8 @@ import com.yomahub.roguemap.RogueMap;
 import com.yomahub.roguemap.serialization.StringCodec;
 import org.junit.jupiter.api.Test;
 
+import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.concurrent.TimeUnit;
@@ -128,6 +130,86 @@ public class BatchOperationTest {
             // 校验先于分配：整批拒绝，无任何条目写入
             assertEquals(0, map.size());
             assertNull(map.get("ok-key"));
+        } finally {
+            map.close();
+        }
+    }
+
+    // ========== getAll ==========
+
+    @Test
+    public void testGetAllRoundtrip() {
+        RogueMap<String, String> map = newTempMap();
+        try {
+            Map<String, String> batch = new HashMap<>();
+            for (int i = 0; i < 100; i++) {
+                batch.put("key" + i, "value" + i);
+            }
+            map.putAll(batch);
+
+            Map<String, String> got = map.getAll(batch.keySet());
+            assertEquals(100, got.size());
+            for (int i = 0; i < 100; i++) {
+                assertEquals("value" + i, got.get("key" + i));
+            }
+        } finally {
+            map.close();
+        }
+    }
+
+    @Test
+    public void testGetAllMissingKeysOmitted() {
+        RogueMap<String, String> map = newTempMap();
+        try {
+            map.put("exists", "v");
+
+            Map<String, String> got = map.getAll(Arrays.asList("exists", "missing1", "missing2"));
+
+            assertEquals(1, got.size());
+            assertEquals("v", got.get("exists"));
+            assertFalse(got.containsKey("missing1"));
+        } finally {
+            map.close();
+        }
+    }
+
+    @Test
+    public void testGetAllNullElementsSkipped() {
+        RogueMap<String, String> map = newTempMap();
+        try {
+            map.put("k", "v");
+
+            Map<String, String> got = map.getAll(new ArrayList<>(Arrays.asList("k", null)));
+
+            assertEquals(1, got.size());
+            assertEquals("v", got.get("k"));
+        } finally {
+            map.close();
+        }
+    }
+
+    @Test
+    public void testGetAllExpiredKeysOmitted() throws InterruptedException {
+        RogueMap<String, String> map = newTempMap();
+        try {
+            map.put("eternal", "v1");
+            map.put("mortal", "v2", 200, TimeUnit.MILLISECONDS);
+
+            Thread.sleep(400);
+
+            Map<String, String> got = map.getAll(Arrays.asList("eternal", "mortal"));
+            assertEquals(1, got.size());
+            assertEquals("v1", got.get("eternal"));
+        } finally {
+            map.close();
+        }
+    }
+
+    @Test
+    public void testGetAllNullCollectionThrows() {
+        RogueMap<String, String> map = newTempMap();
+        try {
+            assertThrows(IllegalArgumentException.class, () -> map.getAll(null));
         } finally {
             map.close();
         }
