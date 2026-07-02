@@ -93,6 +93,13 @@ public class AutoCheckpointManager {
      * <p>计数逻辑与单次记录一致：累计达到阈值时通过 CAS 重置计数并触发一次
      * checkpoint，避免并发下重复触发。
      *
+     * <p><b>注意节奏</b>：批量入口（如 {@code RogueMap.putAll}）会把一整批 n 条
+     * 作为<b>一次</b> {@code onWriteOperations(n)} 调用记入计数器。这意味着一次
+     * 大批次只会触发至多一次 checkpoint，实际 checkpoint 触发频次可能<b>低于</b>
+     * 阈值隐含的频次（例如阈值 1000、一次性 putAll 10000 条，只会触发一次而非
+     * 十次）。如需按真实写条数密集持久化，请在批量操作间手动调用
+     * {@code checkpoint()}。
+     *
      * @param n 本次记录的写操作次数，非正数忽略
      */
     public void onWriteOperations(int n) {

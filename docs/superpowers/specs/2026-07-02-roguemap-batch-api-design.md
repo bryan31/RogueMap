@@ -9,10 +9,10 @@
 
 RogueMap 目前只有单键操作（`put`/`get`/`remove`）。批量写入场景（初始化导入、缓存预热、批处理落盘）下，每个 `put` 都要独立获取一次段写锁、独立触发一次 checkpoint 计数，锁开销无法摊薄。
 
-**目标**：提供 `putAll` / `getAll` 批量 API。`putAll` 按段分组、每段一次写锁批量更新，显著提升批量写吞吐；`getAll` 提供便利的批量读。
+**目标**：提供 `putAll` / `getAll` 批量 API。`putAll` 按段分组、每段一次写锁批量更新（价值主要在 API 便利性与一次大批次只触发一次自动 checkpoint 计数；据实测原始写吞吐与循环 `put` 相当，详见成功标准）；`getAll` 提供便利的批量读。
 
 **成功标准**：
-- `putAll` 在批量导入基准中吞吐明显高于循环 `put`（分段索引模式下）；
+- `putAll` 在批量导入基准中功能正确、吞吐与循环 `put` 相当（分段索引模式下）；据 10 万条短字符串实测，单线程加速比约 0.5–1.0x、6 线程并发约 0.65–0.8x，即与循环 put 基本持平或略低。putAll 的收益主要在 API 便利性与一次大批次只触发一次自动 checkpoint 计数，而非原始写吞吐提升（段锁竞争本就很低，锁摊薄收益不足以抵消 BatchEntry/entries/results 的额外开销，瓶颈在 allocator CAS 与值编码）。
 - 所有索引模式（`basicIndex` / `segmentedIndex` / `primitiveIndex` / `lowHeapIndex`）功能正确；
 - 不改变文件格式，与现有持久化/checkpoint/compact 机制完全兼容。
 

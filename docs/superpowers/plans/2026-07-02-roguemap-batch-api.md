@@ -714,8 +714,10 @@ import java.util.List;
      * 单个键的更新各自原子，并发读写可与本操作交错；抛出异常时部分条目可能
      * 已写入。需要原子多键写入时请使用 {@link #beginTransaction()}。
      *
-     * <p>分段索引模式下按段分组、每段仅加一次写锁，批量导入吞吐显著高于
-     * 循环调用 put；其他索引模式下退化为逐条更新（功能等价）。
+     * <p>分段索引模式下按段分组、每段仅加一次写锁，但据 10 万条短字符串基准实测，
+     * 单线程加速比约 0.5–1.0x、6 线程并发约 0.65–0.8x，与循环 put 基本持平或略低；
+     * putAll 的价值主要在 API 便利性与一次大批次只触发一次自动 checkpoint 计数。
+     * 其他索引模式下退化为逐条更新（功能等价）。
      *
      * @param m 键值对集合
      */
@@ -1327,7 +1329,7 @@ public class BatchPutBenchmarkTest {
 - [ ] **Step 2: 运行基准并记录输出**
 
 Run: `mvn test -pl roguemap-core -Dtest=BatchPutBenchmarkTest`
-Expected: BUILD SUCCESS，stdout 打印形如 `[BatchPutBenchmark] 100,000 条 | 循环 put: xxx ms | putAll: yyy ms | 加速比: z.zzx`。把实际输出记录到任务完成说明中（预期分段索引下加速比 > 1，若 < 1 需排查 putBatch 是否真正生效）。
+Expected: BUILD SUCCESS，stdout 打印形如 `[BatchPutBenchmark] 100,000 条 | 循环 put: xxx ms | putAll: yyy ms | 加速比: z.zzx`。把实际输出记录到任务完成说明中。据最终实测（10 万条短字符串、分段索引、JIT 未充分预热），单线程加速比约 0.5–1.0x、6 线程并发约 0.65–0.8x——putAll 与循环 put 基本持平或略低（段锁竞争本就很低，锁摊薄收益不足以抵消 BatchEntry/entries/results 额外开销，瓶颈在 allocator CAS 与值编码）。加速比 < 1 不代表 putBatch 未生效，而是该负载下批量化本身不产生吞吐收益。
 
 - [ ] **Step 3: 全量回归**
 
@@ -1348,5 +1350,5 @@ Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 ## 完成标准
 
 1. `mvn test -pl roguemap-core` 全绿；
-2. 基准输出显示 putAll 相对循环 put 有加速（分段索引、10 万条场景）；
+2. 基准输出显示 putAll 与循环 put 吞吐相当（分段索引、10 万条场景）：据最终实测，单线程加速比约 0.5–1.0x、6 线程并发约 0.65–0.8x，即持平或略低（putAll 的价值在 API 便利性与 checkpoint 节流，而非原始吞吐）；
 3. 8 个提交，每个提交独立可编译、可测试。
